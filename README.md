@@ -1,4 +1,13 @@
-# Lệnh cài driver máy in brother L12360d
+# Lệnh cài driver máy in brother
+````bash
+bash <(curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-printer-setup.sh)
+````
+````bash
+curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-printer-setup.sh | sudo bash
+````
+
+
+## Lệnh cài driver máy in brother L12360d
 ````bash
 bash <(curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-l2360d.sh)
 ````
