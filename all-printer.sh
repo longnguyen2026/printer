@@ -116,4 +116,51 @@ else
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
     
     # Kiểm tra PPD để ép lệnh lật cạnh dài cấp phần cứng
-    OPTIONS="$(lpoptions -p "$QUEUE
+    OPTIONS="$(lpoptions -p "$QUEUE" -l 2>&1 || true)"[cite: 1]
+    if grep -qiE 'duplex|two[- ]sided|2[- ]sided' <<<"$OPTIONS"; then[cite: 1]
+      DUPLEX_LINE="$(grep -Ei '^[^[:space:]]*(Duplex|two[- ]sided|2[- ]sided)[^:]*:' <<<"$OPTIONS" | head -n 1 || true)"[cite: 1]
+      if [[ -n "$DUPLEX_LINE" ]]; then
+        OPT_KEY="${DUPLEX_LINE%%:*}"[cite: 1]
+        OPT_KEY="${OPT_KEY%%/*}"[cite: 1]
+        OPT_VALS="${DUPLEX_LINE#*:}"[cite: 1]
+        
+        DUPLEX_VAL=""
+        if grep -qE 'DuplexNoTumble' <<<"$OPT_VALS"; then[cite: 1]
+          DUPLEX_VAL="DuplexNoTumble"[cite: 1]
+        elif grep -qE 'LongEdge' <<<"$OPT_VALS"; then[cite: 1]
+          DUPLEX_VAL="LongEdge"[cite: 1]
+        elif grep -qE 'TwoSidedLongEdge' <<<"$OPT_VALS"; then
+          DUPLEX_VAL="TwoSidedLongEdge"
+        fi
+        
+        if [[ -n "$DUPLEX_VAL" ]]; then
+          lpadmin -p "$QUEUE" -o "$OPT_KEY=$DUPLEX_VAL"[cite: 1]
+          info "Đã kích hoạt Duplex phần cứng: $OPT_KEY=$DUPLEX_VAL"[cite: 1]
+        fi
+      fi
+    fi
+    info "Hoàn tất: $QUEUE sẵn sàng in 2 mặt & khổ A4."
+  done
+fi
+
+# 4. Đặt máy in mặc định
+CURRENT_DEF=$(lpstat -d 2>/dev/null | awk -F': ' '{print $2}' || true)
+if [[ -z "$CURRENT_DEF" || "$CURRENT_DEF" == "no system default destination" ]] && [[ ${#ALL_QUEUES[@]} -gt 0 ]]; then
+  if [[ -n "${ALL_QUEUES[0]:-}" ]]; then
+    lpadmin -d "${ALL_QUEUES[0]}"
+    info "Đã gán máy in mặc định: ${ALL_QUEUES[0]}"
+  fi
+fi
+
+echo
+echo "============================================================"
+info "CÀI ĐẶT HOÀN TẤT!"
+echo "Danh sách hàng đợi hiện có:"
+lpstat -p -d 2>/dev/null || true
+echo
+echo "Kiểm tra thuộc tính in 2 mặt & khổ A4:"
+lpoptions -l 2>/dev/null | grep -Ei 'pagesize|media|duplex|sides' || true
+echo
+echo "Giao diện CUPS: http://localhost:631/printers"[cite: 1]
+echo "Log: $LOG_FILE"[cite: 1, 2]
+echo "============================================================"
