@@ -71,23 +71,17 @@ if [[ "$IS_BROTHER" -eq 1 ]]; then
     gunzip -f brinstaller.gz
     chmod 700 brinstaller
     
+    # Tự động trích xuất model từ lsusb nếu có
     DETECTED_MODEL=$(lsusb 2>/dev/null | grep -i "Brother" | head -n 1 | sed -E 's/.*Brother Industries, Ltd (.*)/\1/' | tr -d ' ' || true)
     
-    echo
-    echo "--- CẤU HÌNH MODEL BROTHER ---"
-    INPUT_MODEL=""
-    if [[ -r /dev/tty ]]; then
-      read -r -p "Nhập Model Brother [Enter lấy HL-L2360D hoặc tự nhận ${DETECTED_MODEL:-HL-L2360D}]: " INPUT_MODEL </dev/tty || true
-    fi
-    CHOSEN_MODEL="${INPUT_MODEL:-${DETECTED_MODEL:-HL-L2360D}}"
+    # Tự động chọn model: ưu tiên model cắm USB, mặc định là HL-L2360D
+    CHOSEN_MODEL="${DETECTED_MODEL:-HL-L2360D}"
     CHOSEN_MODEL="$(echo "$CHOSEN_MODEL" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
     
-    info "Đang nạp driver cho model: $CHOSEN_MODEL..."
-    if [[ -r /dev/tty ]]; then
-      bash ./brinstaller "$CHOSEN_MODEL" </dev/tty || warn "Bộ cài Brother có cảnh báo."
-    else
-      bash ./brinstaller "$CHOSEN_MODEL" || warn "Bộ cài Brother có cảnh báo."
-    fi
+    info "Tự động cài đặt driver cho model: $CHOSEN_MODEL..."
+    
+    # Chạy tự động: truyền 'yes' vào bộ cài và thêm cờ -y để không bị hỏi xác nhận
+    yes | bash ./brinstaller -y "$CHOSEN_MODEL" || warn "Bộ cài Brother hoàn tất với cảnh báo."
   else
     warn "Không thể tải bộ cài Brother từ internet."
   fi
