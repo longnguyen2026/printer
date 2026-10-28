@@ -110,7 +110,7 @@ else
     # 3.2. Ép in 2 mặt theo chuẩn IPP (Hỗ trợ Driverless / Everywhere)
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
     
-    # 3.3. Dò PPD phần cứng bằng case-match (Tránh hoàn toàn lỗi if/elif)
+    # 3.3. Dò PPD phần cứng bằng case-match
     OPTIONS="$(lpoptions -p "$QUEUE" -l 2>&1 || true)"[cite: 1]
     if grep -qiE 'duplex|two[- ]sided|2[- ]sided' <<<"$OPTIONS"; then[cite: 1]
       DUPLEX_LINE="$(grep -Ei '^[^[:space:]]*(Duplex|two[- ]sided|2[- ]sided)[^:]*:' <<<"$OPTIONS" | head -n 1 || true)"[cite: 1]
