@@ -62,14 +62,14 @@ elif lpinfo -v 2>/dev/null | grep -qi "Brother"; then
 fi
 
 if [[ "$IS_BROTHER" -eq 1 ]]; then
-  info "Phát hiện máy in Brother. Tiến hành nạp bộ cài chính thức..."[cite: 1]
-  TEMP_DIR="$(mktemp -d -t brother-pkg-XXXXXXXX)"[cite: 1]
-  cd "$TEMP_DIR"[cite: 1]
-  INSTALLER_URL="https://download.brother.com/welcome/dlf006893/linux-brprinter-installer-2.2.4-1.gz"[cite: 1]
+  info "Phát hiện máy in Brother. Tiến hành nạp bộ cài chính thức..."
+  TEMP_DIR="$(mktemp -d -t brother-pkg-XXXXXXXX)"
+  cd "$TEMP_DIR"
+  INSTALLER_URL="https://download.brother.com/welcome/dlf006893/linux-brprinter-installer-2.2.4-1.gz"
   
-  if wget --https-only --timeout=30 -O brinstaller.gz "$INSTALLER_URL"; then[cite: 1]
-    gunzip -f brinstaller.gz[cite: 1]
-    chmod 700 brinstaller[cite: 1]
+  if wget --https-only --timeout=30 -O brinstaller.gz "$INSTALLER_URL"; then
+    gunzip -f brinstaller.gz
+    chmod 700 brinstaller
     
     DETECTED_MODEL=$(lsusb 2>/dev/null | grep -i "Brother" | head -n 1 | sed -E 's/.*Brother Industries, Ltd (.*)/\1/' | tr -d ' ' || true)
     
@@ -79,14 +79,14 @@ if [[ "$IS_BROTHER" -eq 1 ]]; then
     if [[ -r /dev/tty ]]; then
       read -r -p "Nhập Model Brother [Enter lấy HL-L2360D hoặc tự nhận ${DETECTED_MODEL:-HL-L2360D}]: " INPUT_MODEL </dev/tty || true
     fi
-    CHOSEN_MODEL="${INPUT_MODEL:-${DETECTED_MODEL:-HL-L2360D}}"[cite: 1]
-    CHOSEN_MODEL="$(echo "$CHOSEN_MODEL" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"[cite: 1]
+    CHOSEN_MODEL="${INPUT_MODEL:-${DETECTED_MODEL:-HL-L2360D}}"
+    CHOSEN_MODEL="$(echo "$CHOSEN_MODEL" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
     
-    info "Đang nạp driver cho model: $CHOSEN_MODEL..."[cite: 1]
+    info "Đang nạp driver cho model: $CHOSEN_MODEL..."
     if [[ -r /dev/tty ]]; then
-      bash ./brinstaller "$CHOSEN_MODEL" </dev/tty || warn "Bộ cài Brother có cảnh báo."[cite: 1]
+      bash ./brinstaller "$CHOSEN_MODEL" </dev/tty || warn "Bộ cài Brother có cảnh báo."
     else
-      bash ./brinstaller "$CHOSEN_MODEL" || warn "Bộ cài Brother có cảnh báo."[cite: 1]
+      bash ./brinstaller "$CHOSEN_MODEL" || warn "Bộ cài Brother có cảnh báo."
     fi
   else
     warn "Không thể tải bộ cài Brother từ internet."
@@ -98,7 +98,7 @@ fi
 systemctl restart cups
 sleep 2
 
-QUEUE_COUNT=$(lpstat -p 2>/dev/null | wc -l)
+QUEUE_COUNT=$(lpstat -p 2>/dev/null | wc -l || echo "0")
 
 if [[ "$QUEUE_COUNT" -eq 0 ]]; then
   info "Chưa có hàng đợi nào, tiến hành quét tự động kết nối..."
@@ -134,12 +134,13 @@ fi
 echo
 info "Đang cấu hình Duplex (in 2 mặt) và Khổ giấy A4..."
 
-mapfile -t ALL_QUEUES < <(lpstat -p 2>/dev/null | awk '{print $2}' | sort -u)
+mapfile -t ALL_QUEUES < <(lpstat -p 2>/dev/null | awk '{print $2}' | sort -u || true)
 
 if [[ ${#ALL_QUEUES[@]} -eq 0 ]]; then
   warn "Chưa có hàng đợi in nào để cấu hình."
 else
   for QUEUE in "${ALL_QUEUES[@]}"; do
+    [[ -n "$QUEUE" ]] || continue
     echo "----------------------------------------"
     info "Đang cấu hình: $QUEUE"
     
@@ -151,25 +152,25 @@ else
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
     
     # 4.3. Quét và ép tùy chọn PPD phần cứng
-    OPTIONS="$(lpoptions -p "$QUEUE" -l 2>&1 || true)"[cite: 1]
-    if grep -qiE 'duplex|two[- ]sided|2[- ]sided' <<<"$OPTIONS"; then[cite: 1]
-      DUPLEX_LINE="$(grep -Ei '^[^[:space:]]*(Duplex|two[- ]sided|2[- ]sided)[^:]*:' <<<"$OPTIONS" | head -n 1 || true)"[cite: 1]
+    OPTIONS="$(lpoptions -p "$QUEUE" -l 2>&1 || true)"
+    if grep -qiE 'duplex|two[- ]sided|2[- ]sided' <<<"$OPTIONS"; then
+      DUPLEX_LINE="$(grep -Ei '^[^[:space:]]*(Duplex|two[- ]sided|2[- ]sided)[^:]*:' <<<"$OPTIONS" | head -n 1 || true)"
       if [[ -n "$DUPLEX_LINE" ]]; then
-        OPT_KEY="${DUPLEX_LINE%%:*}"[cite: 1]
-        OPT_KEY="${OPT_KEY%%/*}"[cite: 1]
-        OPT_VALS="${DUPLEX_LINE#*:}"[cite: 1]
+        OPT_KEY="${DUPLEX_LINE%%:*}"
+        OPT_KEY="${OPT_KEY%%/*}"
+        OPT_VALS="${DUPLEX_LINE#*:}"
         
         DUPLEX_VAL=""
-        if grep -qE 'DuplexNoTumble' <<<"$OPT_VALS"; then[cite: 1]
-          DUPLEX_VAL="DuplexNoTumble"[cite: 1]
-        elif grep -qE 'LongEdge' <<<"$OPT_VALS"; then[cite: 1]
-          DUPLEX_VAL="LongEdge"[cite: 1]
+        if grep -qE 'DuplexNoTumble' <<<"$OPT_VALS"; then
+          DUPLEX_VAL="DuplexNoTumble"
+        elif grep -qE 'LongEdge' <<<"$OPT_VALS"; then
+          DUPLEX_VAL="LongEdge"
         elif grep -qE 'TwoSidedLongEdge' <<<"$OPT_VALS"; then
           DUPLEX_VAL="TwoSidedLongEdge"
         fi
         
         if [[ -n "$DUPLEX_VAL" ]]; then
-          lpadmin -p "$QUEUE" -o "$OPT_KEY=$DUPLEX_VAL"[cite: 1]
+          lpadmin -p "$QUEUE" -o "$OPT_KEY=$DUPLEX_VAL"
           info "Đã bật Duplex phần cứng: $OPT_KEY=$DUPLEX_VAL"
         fi
       fi
@@ -181,19 +182,21 @@ fi
 # 5. Đảm bảo có máy in mặc định
 CURRENT_DEF=$(lpstat -d 2>/dev/null | awk -F': ' '{print $2}' || true)
 if [[ -z "$CURRENT_DEF" || "$CURRENT_DEF" == "no system default destination" ]] && [[ ${#ALL_QUEUES[@]} -gt 0 ]]; then
-  lpadmin -d "${ALL_QUEUES[0]}"
-  info "Đã gán máy in mặc định: ${ALL_QUEUES[0]}"
+  if [[ -n "${ALL_QUEUES[0]:-}" ]]; then
+    lpadmin -d "${ALL_QUEUES[0]}"
+    info "Đã gán máy in mặc định: ${ALL_QUEUES[0]}"
+  fi
 fi
 
 echo
 echo "============================================================"
 info "HOÀN TẤT THIẾT LẬP HỆ THỐNG MÁY IN!"
 echo "Danh sách hàng đợi hiện tại:"
-lpstat -p -d[cite: 1]
+lpstat -p -d 2>/dev/null || true
 echo
 echo "Cấu hình in 2 mặt & khổ giấy máy in mặc định:"
-lpoptions -l | grep -Ei 'pagesize|media|duplex|sides' || true
+lpoptions -l 2>/dev/null | grep -Ei 'pagesize|media|duplex|sides' || true
 echo
-echo "Giao diện CUPS web: http://localhost:631/printers"[cite: 1]
-echo "File nhật ký: $LOG_FILE"[cite: 1, 2]
+echo "Giao diện CUPS web: http://localhost:631/printers"
+echo "File nhật ký: $LOG_FILE"
 echo "============================================================"
