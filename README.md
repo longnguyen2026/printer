@@ -1,21 +1,12 @@
 # Lệnh cài driver máy in brother
 ````bash
-bash <(curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-printer-setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/brother-printer-setup.sh)
 ````
 ````bash
-curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-printer-setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/brother-printer-setup.sh | sudo bash
 ````
 
-
-## Lệnh cài driver máy in brother L12360d
-````bash
-bash <(curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-l2360d.sh)
-````
-````bash
-curl -fsSL https://raw.githubusercontent.com/longnguyen2026/brother/main/brother-l2360d.sh | sudo bash
-````
-
-## Lệnh kiểm tra sau khi cài
+# Lệnh kiểm tra sau khi cài
 ````bash
 lpoptions -p $(lpstat -p | awk '{print $2}' | grep -i "2360" | head -n 1) -l | grep Duplex
 ````
