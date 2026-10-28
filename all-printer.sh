@@ -29,7 +29,7 @@ echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Cài đặt toàn bộ driver hệ thống từ repository (Bao gồm brlaser, hplip, gutenprint)
+# 1. Cài đặt toàn bộ driver hệ thống từ repository
 info "Đang cài đặt đầy đủ bộ driver hệ thống..."
 apt-get update -qq
 apt-get install -y \
@@ -51,21 +51,17 @@ info "Đang quét và thêm máy in vào hệ thống..."
 systemctl restart cups
 sleep 2
 
-# Tìm URI thiết bị
 TARGET_URI=""
-# Ưu tiên 1: Driverless IPP (Mạng LAN / Wi-Fi)
 DRIVERLESS_URI=$(driverless 2>/dev/null | head -n 1 || true)
 if [[ -n "$DRIVERLESS_URI" ]]; then
   TARGET_URI="$DRIVERLESS_URI"
   info "Phát hiện máy in mạng (Driverless): $TARGET_URI"
 else
-  # Ưu tiên 2: Cổng USB
   USB_URI=$(lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
   if [[ -n "$USB_URI" ]]; then
     TARGET_URI="$USB_URI"
     info "Phát hiện máy in cắm cáp USB: $TARGET_URI"
   else
-    # Ưu tiên 3: Giao thức mạng khác
     NET_URI=$(lpinfo -v 2>/dev/null | grep -Ei 'dnssd://|ipp://|ipps://|socket://' | head -n 1 | awk '{print $2}' || true)
     if [[ -n "$NET_URI" ]]; then
       TARGET_URI="$NET_URI"
@@ -77,11 +73,10 @@ fi
 PRINTER_NAME="MayInVanPhong"
 
 if [[ -n "$TARGET_URI" ]]; then
-  # Nếu là máy in Brother cắm USB, ưu tiên gán driver brlaser
-  if [[ "$TARGET_URI" =~ brother ]] || lsusb 2>/dev/null | grep -qi "Brother"; then
-    info "Áp dụng driver Brother tương thích tự động (brlaser)..."
-    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m drv:///brlaser.drv/brl2360d.ppd 2>/dev/null || \
+  if [[ "$TARGET_URI" =~ [Bb]rother ]] || lsusb 2>/dev/null | grep -qi "Brother"; then
+    info "Áp dụng cấu hình tương thích cho dòng Brother..."
     lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
+    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m drv:///brlaser.drv/brl2360d.ppd 2>/dev/null || \
     lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
   else
     info "Tạo hàng đợi in cho máy..."
@@ -89,9 +84,9 @@ if [[ -n "$TARGET_URI" ]]; then
     lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
   fi
   lpadmin -d "$PRINTER_NAME"
-  info "Đã tạo máy in: $PRINTER_NAME"
+  info "Đã tạo máy in mặc định: $PRINTER_NAME"
 else
-  warn "Không tìm thấy thiết bị máy in nào đang kết nối. Vẫn tiến hành cấu hình hàng đợi hiện có (nếu có)."
+  warn "Không tìm thấy thiết bị mới đang kết nối. Tiếp tục cấu hình các hàng đợi hiện có."
 fi
 
 # 3. Cấu hình in 2 mặt (Duplex) và Khổ giấy A4 cho tất cả các máy
@@ -108,14 +103,14 @@ else
     echo "----------------------------------------"
     info "Cấu hình cho máy in: $QUEUE"
     
-    # Ép khổ giấy A4
+    # 3.1. Khóa khổ giấy A4
     lpadmin -p "$QUEUE" -o PageSize=A4 2>/dev/null || true
     lpadmin -p "$QUEUE" -o media=A4 2>/dev/null || true
     
-    # Ép in 2 mặt theo chuẩn IPP
+    # 3.2. Ép in 2 mặt theo chuẩn IPP (Hỗ trợ Driverless / Everywhere)
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
     
-    # Kiểm tra PPD để ép lệnh lật cạnh dài cấp phần cứng
+    # 3.3. Dò PPD phần cứng bằng case-match (Tránh hoàn toàn lỗi if/elif)
     OPTIONS="$(lpoptions -p "$QUEUE" -l 2>&1 || true)"[cite: 1]
     if grep -qiE 'duplex|two[- ]sided|2[- ]sided' <<<"$OPTIONS"; then[cite: 1]
       DUPLEX_LINE="$(grep -Ei '^[^[:space:]]*(Duplex|two[- ]sided|2[- ]sided)[^:]*:' <<<"$OPTIONS" | head -n 1 || true)"[cite: 1]
@@ -125,17 +120,21 @@ else
         OPT_VALS="${DUPLEX_LINE#*:}"[cite: 1]
         
         DUPLEX_VAL=""
-        if grep -qE 'DuplexNoTumble' <<<"$OPT_VALS"; then[cite: 1]
-          DUPLEX_VAL="DuplexNoTumble"[cite: 1]
-        elif grep -qE 'LongEdge' <<<"$OPT_VALS"; then[cite: 1]
-          DUPLEX_VAL="LongEdge"[cite: 1]
-        elif grep -qE 'TwoSidedLongEdge' <<<"$OPT_VALS"; then
-          DUPLEX_VAL="TwoSidedLongEdge"
-        fi
+        case "$OPT_VALS" in
+          *DuplexNoTumble*)
+            DUPLEX_VAL="DuplexNoTumble"[cite: 1]
+            ;;
+          *LongEdge*)
+            DUPLEX_VAL="LongEdge"[cite: 1]
+            ;;
+          *TwoSidedLongEdge*)
+            DUPLEX_VAL="TwoSidedLongEdge"
+            ;;
+        esac
         
         if [[ -n "$DUPLEX_VAL" ]]; then
-          lpadmin -p "$QUEUE" -o "$OPT_KEY=$DUPLEX_VAL"[cite: 1]
-          info "Đã kích hoạt Duplex phần cứng: $OPT_KEY=$DUPLEX_VAL"[cite: 1]
+          lpadmin -p "$QUEUE" -o "${OPT_KEY}=${DUPLEX_VAL}"[cite: 1]
+          info "Đã kích hoạt Duplex phần cứng: ${OPT_KEY}=${DUPLEX_VAL}"[cite: 1]
         fi
       fi
     fi
@@ -156,9 +155,9 @@ echo
 echo "============================================================"
 info "CÀI ĐẶT HOÀN TẤT!"
 echo "Danh sách hàng đợi hiện có:"
-lpstat -p -d 2>/dev/null || true
+lpstat -p -d 2>/dev/null || true[cite: 1]
 echo
-echo "Kiểm tra thuộc tính in 2 mặt & khổ A4:"
+echo "Kiểm tra thuộc tính in 2 mặt & khổ A4 của máy mặc định:"
 lpoptions -l 2>/dev/null | grep -Ei 'pagesize|media|duplex|sides' || true
 echo
 echo "Giao diện CUPS: http://localhost:631/printers"[cite: 1]
