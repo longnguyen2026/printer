@@ -1,6 +1,6 @@
 # Lệnh cài driver máy in brother
 ````bash
-curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/brother-printer-setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/mayin.sh | sudo bash
 ````
 
 # Lệnh kiểm tra sau khi cài
