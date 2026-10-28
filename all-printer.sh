@@ -103,41 +103,18 @@ else
     echo "----------------------------------------"
     info "Cấu hình cho máy in: $QUEUE"
     
-    # 3.1. Khóa khổ giấy A4
+    # Ép khổ giấy A4
     lpadmin -p "$QUEUE" -o PageSize=A4 2>/dev/null || true
     lpadmin -p "$QUEUE" -o media=A4 2>/dev/null || true
     
-    # 3.2. Ép in 2 mặt theo chuẩn IPP (Hỗ trợ Driverless / Everywhere)
+    # Bật in 2 mặt cạnh dài chuẩn IPP / Driverless
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
     
-    # 3.3. Dò PPD phần cứng bằng case-match
-    OPTIONS="$(lpoptions -p "$QUEUE" -l 2>&1 || true)"[cite: 1]
-    if grep -qiE 'duplex|two[- ]sided|2[- ]sided' <<<"$OPTIONS"; then[cite: 1]
-      DUPLEX_LINE="$(grep -Ei '^[^[:space:]]*(Duplex|two[- ]sided|2[- ]sided)[^:]*:' <<<"$OPTIONS" | head -n 1 || true)"[cite: 1]
-      if [[ -n "$DUPLEX_LINE" ]]; then
-        OPT_KEY="${DUPLEX_LINE%%:*}"[cite: 1]
-        OPT_KEY="${OPT_KEY%%/*}"[cite: 1]
-        OPT_VALS="${DUPLEX_LINE#*:}"[cite: 1]
-        
-        DUPLEX_VAL=""
-        case "$OPT_VALS" in
-          *DuplexNoTumble*)
-            DUPLEX_VAL="DuplexNoTumble"[cite: 1]
-            ;;
-          *LongEdge*)
-            DUPLEX_VAL="LongEdge"[cite: 1]
-            ;;
-          *TwoSidedLongEdge*)
-            DUPLEX_VAL="TwoSidedLongEdge"
-            ;;
-        esac
-        
-        if [[ -n "$DUPLEX_VAL" ]]; then
-          lpadmin -p "$QUEUE" -o "${OPT_KEY}=${DUPLEX_VAL}"[cite: 1]
-          info "Đã kích hoạt Duplex phần cứng: ${OPT_KEY}=${DUPLEX_VAL}"[cite: 1]
-        fi
-      fi
-    fi
+    # Bật in 2 mặt cho các máy dùng driver PPD truyền thống (Brother / HP)
+    lpadmin -p "$QUEUE" -o Duplex=DuplexNoTumble 2>/dev/null || true
+    lpadmin -p "$QUEUE" -o BRDuplex=DuplexNoTumble 2>/dev/null || true
+    lpadmin -p "$QUEUE" -o HPDuplex=DuplexNoTumble 2>/dev/null || true
+    
     info "Hoàn tất: $QUEUE sẵn sàng in 2 mặt & khổ A4."
   done
 fi
@@ -155,11 +132,11 @@ echo
 echo "============================================================"
 info "CÀI ĐẶT HOÀN TẤT!"
 echo "Danh sách hàng đợi hiện có:"
-lpstat -p -d 2>/dev/null || true[cite: 1]
+lpstat -p -d 2>/dev/null || true
 echo
 echo "Kiểm tra thuộc tính in 2 mặt & khổ A4 của máy mặc định:"
 lpoptions -l 2>/dev/null | grep -Ei 'pagesize|media|duplex|sides' || true
 echo
-echo "Giao diện CUPS: http://localhost:631/printers"[cite: 1]
-echo "Log: $LOG_FILE"[cite: 1, 2]
+echo "Giao diện CUPS: http://localhost:631/printers"
+echo "Log: $LOG_FILE"
 echo "============================================================"
