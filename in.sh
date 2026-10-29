@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SCRIPT TỰ ĐỘNG DÒ TÌM & CÀI ĐẶT DRIVER MÁY IN BROTHER & HP (USB + LAN)
-# TỰ ĐỘNG BẬT IN 2 MẶT, KHỔ GIẤY A4, TƯƠNG THÍCH HOÀN TOÀN WPS OFFICE
-# Hỗ trợ: Linux Mint, Ubuntu, Debian
-# Cập nhật 29/10/2026
+# SCRIPT TỰ ĐỘNG DÒ VÀ XÁC THỰC DANH TÍNH MÁY IN BROTHER & HP (USB / LAN / DNS-SD)
+# BẬT IN 2 MẶT (DUPLEX), KHÓA KHỔ A4, KHẮC PHỤC LỖI WPS OFFICE
+# Cập nhật 16g 29.10.2026
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -25,216 +24,184 @@ chmod 600 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "============================================================"
-echo " TỰ ĐỘNG DÒ & CÀI ĐẶT MÁY IN BROTHER / HP (A4 & IN 2 MẶT)"
+echo " DÒ TÌM & XÁC THỰC MÁY IN BROTHER / HP (KHÔNG GÁN ẨU)"
 echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Cài đặt toàn bộ driver và gói công cụ quét mạng
-info "Đang cập nhật driver HP, Brother và công cụ dò quét..."
+# 1. Cài đặt driver cần thiết và công cụ dò quét
+info "Đang cập nhật danh mục driver và công cụ dò quét..."
 apt-get update -qq
-
 apt-get install -y \
   cups cups-client cups-filters cups-ipp-utils \
   printer-driver-brlaser \
   printer-driver-hpcups hplip hplip-data printer-driver-postscript-hp \
-  printer-driver-escpr printer-driver-gutenprint printer-driver-foo2zjs \
   avahi-daemon avahi-utils usbutils iproute2 nmap curl -qq
 
-# Vô hiệu hóa cups-browsed để triệt tiêu máy in ma gây lỗi WPS Office
+# Tắt cups-browsed để tránh sinh máy in ma ảo
 systemctl stop cups-browsed 2>/dev/null || true
 systemctl disable cups-browsed 2>/dev/null || true
 systemctl enable --now cups avahi-daemon
 sleep 1
 
-# Hủy các lệnh in kẹt cũ
 cancel -a -x 2>/dev/null || true
 
-# 2. Dò tìm máy in (USB -> mDNS -> Quét IP LAN xác thực HTTP)
-info "Bắt đầu dò tìm máy in văn phòng..."
 TARGET_URI=""
-PRINTER_BRAND="generic"
-PRINTER_MODEL=""
+DETECTED_BRAND=""
+DETECTED_MODEL=""
 
-# --- TẦNG 1: CỔNG CẮM USB TRỰC TIẾP ---
-USB_URI=$(timeout 3 lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
-if [[ -n "$USB_URI" ]]; then
-  TARGET_URI="$USB_URI"
-  info "Phát hiện máy in cắm qua cáp USB: $TARGET_URI"
-  USB_INFO=$(lsusb 2>/dev/null || true)
-  if echo "$USB_INFO" | grep -qi "Brother"; then
-    PRINTER_BRAND="brother"
-  elif echo "$USB_INFO" | grep -qi "Hewlett-Packard\|HP"; then
-    PRINTER_BRAND="hp"
-    PRINTER_MODEL=$(echo "$USB_URI" | sed -n 's/.*m=\([^&]*\).*/\1/p' || true)
+info "Bắt đầu quét và xác thực thiết bị in..."
+
+# ==============================================================================
+# TẦNG 1: DÒ VÀ XÁC THỰC MÁY IN CẮM CÁP USB TRỰC TIẾP
+# ==============================================================================
+USB_DEV=$(lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
+if [[ -n "$USB_DEV" ]]; then
+  info "Kiểm tra thiết bị cắm cổng USB..."
+  USB_LIST=$(lsusb 2>/dev/null || true)
+  if echo "$USB_LIST" | grep -qi "Brother"; then
+    TARGET_URI="$USB_DEV"
+    DETECTED_BRAND="brother"
+    DETECTED_MODEL="Brother USB Printer"
+    info "=> Xác thực thành công: Máy in Brother qua USB"
+  elif echo "$USB_LIST" | grep -qiE "Hewlett-Packard|HP"; then
+    TARGET_URI="$USB_DEV"
+    DETECTED_BRAND="hp"
+    DETECTED_MODEL="HP USB Printer"
+    info "=> Xác thực thành công: Máy in HP qua USB"
   fi
 fi
 
-# --- TẦNG 2: MẠNG MDNS (DRIVERLESS) ---
+# ==============================================================================
+# TẦNG 2: DÒ VÀ XÁC THỰC QUA MẠNG DNS-SD / IPP / CUPS REMOTE SHARE
+# ==============================================================================
 if [[ -z "$TARGET_URI" ]]; then
-  DRIVERLESS_URI=$(timeout 3 driverless 2>/dev/null | head -n 1 || true)
-  if [[ -n "$DRIVERLESS_URI" ]]; then
-    TARGET_URI="$DRIVERLESS_URI"
-    info "Phát hiện máy in mạng qua mDNS: $TARGET_URI"
-    if [[ "$DRIVERLESS_URI" =~ [Bb]rother ]]; then PRINTER_BRAND="brother"; fi
-    if [[ "$DRIVERLESS_URI" =~ [Hh][Pp] ]]; then PRINTER_BRAND="hp"; fi
-  fi
+  info "Đang dò tìm máy in chia sẻ qua mạng (DNS-SD / CUPS Share / IPP)..."
+  
+  # Lấy danh sách các URI mạng mà CUPS/Avahi phát hiện được
+  mapfile -t NETWORK_URIS < <(lpinfo -v 2>/dev/null | grep -Ei 'network (dnssd|ipp|ipps)://' | awk '{print $2}' || true)
+  
+  for N_URI in "${NETWORK_URIS[@]}"; do
+    [[ -n "$N_URI" ]] || continue
+    
+    # Kiểm tra xem tên máy in trên URI mạng có chứa Brother không
+    if echo "$N_URI" | grep -qi "Brother"; then
+      TARGET_URI="$N_URI"
+      DETECTED_BRAND="brother"
+      DETECTED_MODEL="Brother Network (DNS-SD/IPP)"
+      info "=> Xác thực thành công: $DETECTED_MODEL qua $N_URI"
+      break
+    # Kiểm tra xem tên máy in trên URI mạng có chứa HP / LaserJet không
+    elif echo "$N_URI" | grep -qiE "hp|laserjet|m402"; then
+      TARGET_URI="$N_URI"
+      DETECTED_BRAND="hp"
+      DETECTED_MODEL="HP Network (DNS-SD/IPP)"
+      info "=> Xác thực thành công: $DETECTED_MODEL qua $N_URI"
+      break
+    fi
+  done
 fi
 
-# --- TẦNG 3: QUÉT MẠNG LAN CỔNG 9100 & XÁC THỰC DANH TÍNH ---
+# ==============================================================================
+# TẦNG 3: QUÉT DẢI IP NỘI BỘ (CỔNG 9100) VÀ BẮT BUỘC ĐỐI SOÁT WEB PORT 80
+# ==============================================================================
 if [[ -z "$TARGET_URI" ]]; then
-  info "Đang quét và xác thực thiết bị in trong mạng LAN..."
+  info "Đang quét cổng 9100 trên dải mạng LAN và xác thực danh tính HTTP..."
   LOCAL_SUBNET=$(ip route show default 2>/dev/null | awk '{print $3}' | cut -d. -f1-3 || true)
   
   if [[ -n "$LOCAL_SUBNET" ]]; then
-    mapfile -t CANDIDATE_IPS < <(nmap -p 9100 --open -T4 "${LOCAL_SUBNET}.0/24" -oG - 2>/dev/null | awk '/9100\/open/{print $2}' || true)
+    mapfile -t IPS_9100 < <(nmap -p 9100 --open -T4 "${LOCAL_SUBNET}.0/24" -oG - 2>/dev/null | awk '/9100\/open/{print $2}' || true)
     
-    for IP in "${CANDIDATE_IPS[@]}"; do
+    for IP in "${IPS_9100[@]}"; do
       [[ -n "$IP" ]] || continue
       
-      # Đọc thông tin thiết bị qua HTTP Port 80
-      PAGE_INFO=$(curl -s -L --connect-timeout 2 --max-time 3 "http://${IP}" 2>/dev/null || true)
+      # Gửi lệnh cURL kiểm tra trang thông tin thiết bị
+      PAGE_CONTENT=$(curl -s -L --connect-timeout 2 --max-time 3 "http://${IP}" 2>/dev/null || true)
       
-      if echo "$PAGE_INFO" | grep -qi "Brother"; then
+      if echo "$PAGE_CONTENT" | grep -qi "Brother"; then
         TARGET_URI="socket://${IP}:9100"
-        PRINTER_BRAND="brother"
-        info "ĐÃ TÌM THẤY MÁY IN BROTHER TẠI IP: $IP"
+        DETECTED_BRAND="brother"
+        DETECTED_MODEL="Brother IP Network"
+        info "=> Xác thực thành công: Tìm thấy đúng máy in Brother tại IP: $IP"
         break
-      elif echo "$PAGE_INFO" | grep -qi "Hewlett-Packard\|HP LaserJet\|HP PageWide"; then
+      elif echo "$PAGE_CONTENT" | grep -qiE "Hewlett-Packard|HP LaserJet|LaserJet|HP PageWide"; then
         TARGET_URI="socket://${IP}:9100"
-        PRINTER_BRAND="hp"
-        info "ĐÃ TÌM THẤY MÁY IN HP TẠI IP: $IP"
+        DETECTED_BRAND="hp"
+        DETECTED_MODEL="HP IP Network"
+        info "=> Xác thực thành công: Tìm thấy đúng máy in HP tại IP: $IP"
         break
+      else
+        info "Bỏ qua thiết bị tại IP $IP (Không phải Brother hoặc HP)."
       fi
     done
   fi
 fi
 
-# 3. Tạo hàng đợi và chỉ định driver phù hợp theo hãng
-if [[ -n "$TARGET_URI" ]]; then
-  # Xóa các hàng đợi lỗi cũ
+# ==============================================================================
+# TIẾN HÀNH TẠO HÀNG ĐỢI THEO ĐÚNG HÃNG ĐÃ XÁC THỰC
+# ==============================================================================
+if [[ -n "$TARGET_URI" && -n "$DETECTED_BRAND" ]]; then
+  # Xóa các hàng đợi cũ để tránh xung đột
   lpadmin -x "Brother_HL_L2360D_series" 2>/dev/null || true
+  lpadmin -x "Brother-Printer" 2>/dev/null || true
+  lpadmin -x "HP-Printer" 2>/dev/null || true
   lpadmin -x "MayInVanPhong" 2>/dev/null || true
-  
-  if [[ "$PRINTER_BRAND" == "brother" ]]; then
-    PRINTER_NAME="Brother-Printer"
-    lpadmin -x "$PRINTER_NAME" 2>/dev/null || true
-    info "Đang thiết lập hàng đợi $PRINTER_NAME..."
-    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m drv:///brlaser.drv/brl2360d.ppd 2>/dev/null || \
-    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
-    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
 
-  elif [[ "$PRINTER_BRAND" == "hp" ]]; then
-    PRINTER_NAME="HP-Printer"
-    lpadmin -x "$PRINTER_NAME" 2>/dev/null || true
-    info "Đang thiết lập hàng đợi $PRINTER_NAME..."
+  if [[ "$DETECTED_BRAND" == "brother" ]]; then
+    FINAL_NAME="Brother-Printer"
+    info "Cấu hình hàng đợi [$FINAL_NAME] sử dụng driver brlaser..."
     
-    # Tự động tìm file PPD hpcups thích hợp nhất trong hệ thống
-    HP_PPD=""
-    if [[ -n "$PRINTER_MODEL" ]]; then
-      HP_PPD=$(lpinfo -m 2>/dev/null | grep -i "hpcups" | grep -i "$PRINTER_MODEL" | head -n 1 | awk '{print $1}' || true)
-    fi
-    if [[ -z "$HP_PPD" ]]; then
-      HP_PPD=$(lpinfo -m 2>/dev/null | grep -iE 'hp-laserjet.*hpcups' | head -n 1 | awk '{print $1}' || true)
-    fi
+    lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E -m drv:///brlaser.drv/brl2360d.ppd 2>/dev/null || \
+    lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
+    lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E
 
-    if [[ -n "$HP_PPD" ]]; then
-      lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m "$HP_PPD" 2>/dev/null || \
-      lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
-      lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
+  elif [[ "$DETECTED_BRAND" == "hp" ]]; then
+    FINAL_NAME="HP-Printer"
+    info "Cấu hình hàng đợi [$FINAL_NAME] cho máy in HP..."
+    
+    # Nếu kết nối qua RAW socket 9100 thì gán driver hpcups
+    if [[ "$TARGET_URI" =~ socket:// ]]; then
+      HP_PPD=$(lpinfo -m 2>/dev/null | grep -iE 'hp-laserjet_m402|hp-laserjet.*hpcups' | head -n 1 | awk '{print $1}' || true)
+      if [[ -n "$HP_PPD" ]]; then
+        lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E -m "$HP_PPD" 2>/dev/null || \
+        lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
+        lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E
+      else
+        lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
+        lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E
+      fi
     else
-      lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
-      lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
+      # Nếu kết nối qua chia sẻ DNS-SD/IPP Everywhere, dùng trực tiếp everywhere
+      lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
+      lpadmin -p "$FINAL_NAME" -v "$TARGET_URI" -E
     fi
-  else#!/usr/bin/env bash
-# ==============================================================================
-# SCRIPT CÀI ĐẶT DRIVER TẤT CẢ CÁC HÃNG & TỰ ĐỘNG DÒ CHÍNH XÁC MÁY IN BROTHER / HP
-# Tương thích: Linux Mint, Ubuntu, Debian, WPS Office, LibreOffice
-# ==============================================================================
-
-set -Eeuo pipefail
-IFS=$'\n\t'
-
-LOG_FILE="/var/log/all-printer-setup.log"
-
-info()  { echo -e "\e[32m[INFO]\e[0m $*"; }
-warn()  { echo -e "\e[33m[CẢNH BÁO]\e[0m $*" >&2; }
-die()   { echo -e "\e[31m[LỖI]\e[0m $*" >&2; exit 1; }
-
-if [[ $EUID -ne 0 ]]; then
-  die "Vui lòng chạy với quyền root: sudo bash $0"
-fi
-
-mkdir -p "$(dirname "$LOG_FILE")"
-touch "$LOG_FILE"
-chmod 600 "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-echo "============================================================"
-echo " TỰ ĐỘNG DÒ VÀ CÀI ĐẶT MÁY IN CHUẨN XÁC CHO MẠNG VĂN PHÒNG"
-echo "============================================================"
-
-export DEBIAN_FRONTEND=noninteractive
-
-# 1. Cài đặt các gói driver cần thiết và công cụ mạng
-info "Đang cập nhật và cài đặt driver cùng công cụ mạng..."
-apt-get update -qq
-
-apt-get install -y \
-  cups cups-client cups-filters cups-ipp-utils \
-  printer-driver-brlaser \
-  printer-driver-hpcups hplip hplip-data \
-  printer-driver-escpr printer-driver-gutenprint printer-driver-foo2zjs \
-  avahi-daemon avahi-utils usbutils iproute2 nmap curl -qq
-
-# Tắt cups-browsed để tránh sinh máy in ma gây lỗi WPS Office
-systemctl stop cups-browsed 2>/dev/null || true
-systemctl disable cups-browsed 2>/dev/null || true
-systemctl enable --now cups avahi-daemon
-sleep 1
-
-# Hủy tất cả các lệnh in bị kẹt trước đó
-cancel -a -x 2>/dev/null || true
-
-# 2. Dò tìm máy in (Cổng USB -> mDNS -> Quét IP có xác thực danh tính)
-info "Bắt đầu dò tìm máy in..."
-TARGET_URI=""
-PRINTER_BRAND="generic"
-
-# Ưu tiên 1: Cổng USB cắm trực tiếp
-USB_URI=$(timeout 3 lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
-if [[ -n "$USB_URI" ]]; then
-  TARGET_URI="$USB_URI"
-  info "Phát hiện máy in cắm qua cáp USB: $TARGET_URI"
-  if lsusb 2>/dev/null | grep -qi "Brother"; then PRINTER_BRAND="brother"; fi
-
-    PRINTER_NAME="VanPhong-Printer"
-    lpadmin -x "$PRINTER_NAME" 2>/dev/null || true
-    info "Đang thiết lập hàng đợi $PRINTER_NAME..."
-    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
-    lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
   fi
 
   # Kích hoạt hàng đợi và gán làm mặc định
-  lpadmin -d "$PRINTER_NAME"
-  cupsenable "$PRINTER_NAME"
-  cupsaccept "$PRINTER_NAME"
+  lpadmin -d "$FINAL_NAME"
+  cupsenable "$FINAL_NAME"
+  cupsaccept "$FINAL_NAME"
 
-  # Cấu hình Khổ giấy A4 và In 2 mặt (Duplex)
-  info "Đang áp dụng cấu hình khổ giấy A4 và in 2 mặt mặc định..."
-  lpadmin -p "$PRINTER_NAME" -o PageSize=A4 -o media=A4
-  lpadmin -p "$PRINTER_NAME" -o sides=two-sided-long-edge
-  lpadmin -p "$PRINTER_NAME" -o Duplex=DuplexNoTumble
-  lpadmin -p "$PRINTER_NAME" -o BRDuplex=DuplexNoTumble
-  lpadmin -p "$PRINTER_NAME" -o HPDuplex=DuplexNoTumble
-  lpadmin -p "$PRINTER_NAME" -o DuplexUnit=Installed
+  # Cấu hình chuẩn A4 và in 2 mặt (Duplex)
+  info "Đang thiết lập khổ giấy A4 và in 2 mặt cho $FINAL_NAME..."
+  lpadmin -p "$FINAL_NAME" -o PageSize=A4 2>/dev/null || true
+  lpadmin -p "$FINAL_NAME" -o media=A4 2>/dev/null || true
+  lpadmin -p "$FINAL_NAME" -o sides=two-sided-long-edge 2>/dev/null || true
+  lpadmin -p "$FINAL_NAME" -o Duplex=DuplexNoTumble 2>/dev/null || true
+  lpadmin -p "$FINAL_NAME" -o BRDuplex=DuplexNoTumble 2>/dev/null || true
+  lpadmin -p "$FINAL_NAME" -o HPDuplex=DuplexNoTumble 2>/dev/null || true
+  lpadmin -p "$FINAL_NAME" -o DuplexUnit=Installed 2>/dev/null || true
 
-  info "Hoàn tất cài đặt máy in mặc định: $PRINTER_NAME"
+  info "ĐÃ CÀI ĐẶT THÀNH CÔNG MÁY IN MẶC ĐỊNH: $FINAL_NAME ($DETECTED_MODEL)"
 else
-  warn "Không phát hiện thấy máy in Brother/HP nào đang kết nối (USB hoặc LAN)."
+  warn "============================================================"
+  warn "KHÔNG TÌM THẤY THIẾT BỊ NÀO XÁC THỰC ĐƯỢC LÀ BROTHER HOẶC HP!"
+  warn "Script từ chối gán bừa để tránh in nhầm thiết bị mạng khác."
+  warn "Vui lòng kiểm tra nguồn máy in và kết nối dây mạng/USB."
+  warn "============================================================"
 fi
 
-# 4. Dọn dẹp cache in của WPS Office trên tất cả tài khoản
+# Xóa cache in của WPS Office
 for USER_HOME in /home/*; do
   if [[ -d "$USER_HOME/.config/Kingsoft" ]]; then
     rm -rf "$USER_HOME/.config/Kingsoft/wps/printer"* 2>/dev/null || true
@@ -248,10 +215,9 @@ sleep 1
 
 echo
 echo "============================================================"
-info "CÀI ĐẶT HOÀN TẤT!"
-echo "Danh sách hàng đợi hiện có:"
+info "KẾT QUẢ CẤU HÌNH HỆ THỐNG:"
 lpstat -p -d 2>/dev/null || true
 echo
-echo "Kiểm tra kết nối thiết bị:"
+echo "Chi tiết kết nối thiết bị:"
 lpstat -v 2>/dev/null || true
 echo "============================================================"
