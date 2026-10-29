@@ -1,4 +1,4 @@
-# Lệnh cài driver máy in brother
+# Lệnh cài driver máy in (đã hoạt động tốt)
 ````bash
 curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/printer.sh | sudo bash
 ````
