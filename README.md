@@ -2,6 +2,12 @@
 ````bash
 curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/printer.sh | sudo bash
 ````
+````bash
+curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/mayin.sh | sudo bash
+````
+````bash
+curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/in.sh | sudo bash
+````
 
 # Lệnh kiểm tra sau khi cài
 ````bash
