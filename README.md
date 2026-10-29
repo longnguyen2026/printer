@@ -2,7 +2,7 @@
 ````bash
 curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/printer.sh | sudo bash
 ````
-
+## Lệnh sau cài chuẩn HP và Brother
 ````bash
 curl -fsSL https://raw.githubusercontent.com/longnguyen2026/printer/main/in.sh | sudo bash
 ````
