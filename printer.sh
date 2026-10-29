@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SCRIPT FULL DRIVER TẤT CẢ CÁC HÃNG (HP, BROTHER, CANON, EPSON, SAMSUNG, FUJI,...)
-# TỰ ĐỘNG PHÁT HIỆN, ADD HÀNG ĐỢI & CẤU HÌNH IN 2 MẶT + KHỔ A4 (100% AUTOMATION)
+# SCRIPT FULL DRIVER TẤT CẢ CÁC HÃNG (HP, BROTHER, CANON, EPSON, SAMSUNG, XEROX,...)
+# TỰ ĐỘNG PHÁT HIỆN, ADD HÀNG ĐỢI & CẤU HÌNH IN 2 MẶT + KHỔ A4 (TỐC ĐỘ CAO - KHÔNG TREO)
 # Tương thích: Linux Mint, Ubuntu, Debian
 # Chạy trực tiếp: curl -fsSL <URL> | sudo bash
 # ==============================================================================
@@ -30,60 +30,50 @@ echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Cài đặt toàn bộ kho driver in ấn từ repository hệ thống
-info "Đang cài đặt toàn bộ driver cho tất cả các hãng máy in..."
+# 1. Cài đặt toàn bộ driver văn phòng phổ biến (Đã lược bỏ PPD rác gây nghẽn)
+info "Đang cài đặt gói driver cốt lõi cho tất cả các hãng..."
 apt-get update -qq
 
 apt-get install -y \
   cups cups-client cups-filters cups-ipp-utils \
-  printer-driver-all \
   printer-driver-brlaser \
   printer-driver-hpcups hplip hplip-data printer-driver-postscript-hp \
-  printer-driver-c2esp \
   printer-driver-escpr \
   printer-driver-gutenprint \
   printer-driver-foo2zjs printer-driver-foo2zjs-common \
   printer-driver-splix \
-  printer-driver-m2300w \
-  printer-driver-min12xxw \
-  printer-driver-pnm2ppa \
-  printer-driver-sag-gdi \
-  printer-driver-ptouch \
-  printer-driver-c2050 \
-  printer-driver-cjet \
-  printer-driver-dymo \
   printer-driver-fujixerox \
-  printer-driver-indexbraille \
-  printer-driver-oki \
-  foomatic-db-compressed-ppds \
-  openprinting-ppds \
+  printer-driver-c2esp \
+  printer-driver-pnm2ppa \
+  printer-driver-ptouch \
+  printer-driver-dymo \
   avahi-daemon avahi-utils \
   usbutils -qq
 
 systemctl enable --now cups avahi-daemon
-sleep 2
+sleep 1
 
-# 2. Tự động phát hiện và thêm máy in vào CUPS
+# 2. Tự động phát hiện và thêm máy in vào CUPS (Có Timeout chống treo mạng)
 info "Đang quét và thêm máy in vào hệ thống..."
 systemctl restart cups
-sleep 2
+sleep 1
 
 TARGET_URI=""
 
-# Ưu tiên 1: Driverless IPP (Chuẩn mạng hiện đại của Mopria/AirPrint cho mọi hãng)
-DRIVERLESS_URI=$(driverless 2>/dev/null | head -n 1 || true)
+# Ưu tiên 1: Driverless IPP (Khống chế timeout 5s để tránh treo khi mạng chặn mDNS)
+DRIVERLESS_URI=$(timeout 5 driverless 2>/dev/null | head -n 1 || true)
 if [[ -n "$DRIVERLESS_URI" ]]; then
   TARGET_URI="$DRIVERLESS_URI"
   info "Phát hiện máy in mạng (Driverless): $TARGET_URI"
 else
-  # Ưu tiên 2: Cổng cắm USB trực tiếp
-  USB_URI=$(lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
+  # Ưu tiên 2: Cổng USB cắm trực tiếp (Khống chế timeout 3s)
+  USB_URI=$(timeout 3 lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
   if [[ -n "$USB_URI" ]]; then
     TARGET_URI="$USB_URI"
     info "Phát hiện máy in cắm cáp USB: $TARGET_URI"
   else
-    # Ưu tiên 3: Giao thức mạng CUPS (DNSSD, IPP, Socket JetDirect cổng 9100, LPD)
-    NET_URI=$(lpinfo -v 2>/dev/null | grep -Ei 'dnssd://|ipp://|ipps://|socket://|lpd://' | head -n 1 | awk '{print $2}' || true)
+    # Ưu tiên 3: Giao thức mạng CUPS (DNSSD, IPP, JetDirect 9100, LPD với timeout 5s)
+    NET_URI=$(timeout 5 lpinfo -v 2>/dev/null | grep -Ei 'dnssd://|ipp://|ipps://|socket://|lpd://' | head -n 1 | awk '{print $2}' || true)
     if [[ -n "$NET_URI" ]]; then
       TARGET_URI="$NET_URI"
       info "Phát hiện máy in mạng CUPS: $TARGET_URI"
@@ -93,8 +83,8 @@ fi
 
 PRINTER_NAME="MayInVanPhong"
 
+# Chỉ tự tạo thêm hàng đợi nếu tìm thấy thiết bị và hàng đợi đó chưa từng tồn tại
 if [[ -n "$TARGET_URI" ]]; then
-  # Nếu là dòng Brother đặc thù, hỗ trợ fallback sang brlaser nếu everywhere từ chối
   if [[ "$TARGET_URI" =~ [Bb]rother ]] || lsusb 2>/dev/null | grep -qi "Brother"; then
     info "Áp dụng cấu hình tương thích cho dòng Brother..."
     lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
@@ -108,7 +98,7 @@ if [[ -n "$TARGET_URI" ]]; then
   lpadmin -d "$PRINTER_NAME"
   info "Đã thiết lập máy in mặc định: $PRINTER_NAME"
 else
-  warn "Không phát hiện thiết bị mới kết nối lúc này. Tiếp tục cấu hình các máy đã có trong hệ thống."
+  warn "Không phát hiện thêm cổng in mới kết nối lúc này. Tiếp tục cấu hình các máy đã có trong hệ thống."
 fi
 
 # 3. Cấu hình in 2 mặt (Duplex) và Khổ giấy A4 cho tất cả hàng đợi
@@ -125,14 +115,14 @@ else
     echo "----------------------------------------"
     info "Cấu hình cho máy in: $QUEUE"
     
-    # Ép khổ giấy chuẩn A4
+    # Khóa khổ giấy chuẩn A4
     lpadmin -p "$QUEUE" -o PageSize=A4 2>/dev/null || true
     lpadmin -p "$QUEUE" -o media=A4 2>/dev/null || true
     
-    # Bật in 2 mặt lật cạnh dài theo chuẩn IPP Everywhere / Driverless
+    # Bật in 2 mặt lật cạnh dài chuẩn IPP Everywhere / Driverless
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
     
-    # Bật in 2 mặt cho các máy dùng driver PPD truyền thống của từng hãng (Brother, HP, Canon, Samsung, Epson...)
+    # Bật in 2 mặt phần cứng cho các hãng (Brother, HP, Canon, Samsung, Epson...)
     lpadmin -p "$QUEUE" -o Duplex=DuplexNoTumble 2>/dev/null || true
     lpadmin -p "$QUEUE" -o BRDuplex=DuplexNoTumble 2>/dev/null || true
     lpadmin -p "$QUEUE" -o HPDuplex=DuplexNoTumble 2>/dev/null || true
