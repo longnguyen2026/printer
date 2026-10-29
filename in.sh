@@ -30,7 +30,7 @@ echo "============================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Cài đặt toàn bộ driver văn phòng phổ biến (Đã lược bỏ PPD rác gây nghẽn)
+# 1. Cài đặt các gói driver thông dụng nhất
 info "Đang cài đặt gói driver cốt lõi cho tất cả các hãng..."
 apt-get update -qq
 
@@ -53,26 +53,26 @@ apt-get install -y \
 systemctl enable --now cups avahi-daemon
 sleep 1
 
-# 2. Tự động phát hiện và thêm máy in vào CUPS (Có Timeout chống treo mạng)
+# 2. Tự động phát hiện và thêm máy in vào CUPS
 info "Đang quét và thêm máy in vào hệ thống..."
 systemctl restart cups
 sleep 1
 
 TARGET_URI=""
 
-# Ưu tiên 1: Driverless IPP (Khống chế timeout 5s để tránh treo khi mạng chặn mDNS)
+# Ưu tiên 1: Driverless IPP (Mạng LAN / Wi-Fi)
 DRIVERLESS_URI=$(timeout 5 driverless 2>/dev/null | head -n 1 || true)
 if [[ -n "$DRIVERLESS_URI" ]]; then
   TARGET_URI="$DRIVERLESS_URI"
   info "Phát hiện máy in mạng (Driverless): $TARGET_URI"
 else
-  # Ưu tiên 2: Cổng USB cắm trực tiếp (Khống chế timeout 3s)
+  # Ưu tiên 2: Cổng USB cắm trực tiếp
   USB_URI=$(timeout 3 lpinfo -v 2>/dev/null | grep -Ei 'direct usb://' | head -n 1 | awk '{print $2}' || true)
   if [[ -n "$USB_URI" ]]; then
     TARGET_URI="$USB_URI"
     info "Phát hiện máy in cắm cáp USB: $TARGET_URI"
   else
-    # Ưu tiên 3: Giao thức mạng CUPS (DNSSD, IPP, JetDirect 9100, LPD với timeout 5s)
+    # Ưu tiên 3: Giao thức mạng CUPS
     NET_URI=$(timeout 5 lpinfo -v 2>/dev/null | grep -Ei 'dnssd://|ipp://|ipps://|socket://|lpd://' | head -n 1 | awk '{print $2}' || true)
     if [[ -n "$NET_URI" ]]; then
       TARGET_URI="$NET_URI"
@@ -83,7 +83,6 @@ fi
 
 PRINTER_NAME="MayInVanPhong"
 
-# Chỉ tự tạo thêm hàng đợi nếu tìm thấy thiết bị và hàng đợi đó chưa từng tồn tại
 if [[ -n "$TARGET_URI" ]]; then
   if [[ "$TARGET_URI" =~ [Bb]rother ]] || lsusb 2>/dev/null | grep -qi "Brother"; then
     info "Áp dụng cấu hình tương thích cho dòng Brother..."
@@ -115,14 +114,12 @@ else
     echo "----------------------------------------"
     info "Cấu hình cho máy in: $QUEUE"
     
-    # Khóa khổ giấy chuẩn A4
+    # Khóa khổ giấy A4
     lpadmin -p "$QUEUE" -o PageSize=A4 2>/dev/null || true
     lpadmin -p "$QUEUE" -o media=A4 2>/dev/null || true
     
-    # Bật in 2 mặt lật cạnh dài chuẩn IPP Everywhere / Driverless
+    # Bật in 2 mặt lật cạnh dài
     lpadmin -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
-    
-    # Bật in 2 mặt phần cứng cho các hãng (Brother, HP, Canon, Samsung, Epson...)
     lpadmin -p "$QUEUE" -o Duplex=DuplexNoTumble 2>/dev/null || true
     lpadmin -p "$QUEUE" -o BRDuplex=DuplexNoTumble 2>/dev/null || true
     lpadmin -p "$QUEUE" -o HPDuplex=DuplexNoTumble 2>/dev/null || true
@@ -146,11 +143,11 @@ echo
 echo "============================================================"
 info "CÀI ĐẶT TOÀN DIỆN HOÀN TẤT!"
 echo "Danh sách hàng đợi hiện có:"
-lpstat -p -d 2>/dev/null || true[cite: 1]
+lpstat -p -d 2>/dev/null || true
 echo
 echo "Kiểm tra thuộc tính in 2 mặt & khổ A4 của máy mặc định:"
 lpoptions -l 2>/dev/null | grep -Ei 'pagesize|media|duplex|sides' || true
 echo
-echo "Giao diện CUPS: http://localhost:631/printers"[cite: 1]
-echo "Log: $LOG_FILE"[cite: 1, 2]
+echo "Giao diện CUPS: http://localhost:631/printers"
+echo "Log: $LOG_FILE"
 echo "============================================================"
