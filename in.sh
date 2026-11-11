@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SCRIPT TỰ ĐỘNG DÒ VÀ CÀI ĐẶT MÁY IN HP / BROTHER (USB, DNS-SD, IPP, LAN)
+# SCRIPT TỰ ĐỘNG DÒ VÀ CÀI ĐẶT MÁY IN HP / BROTHER (USB, RAW SOCKET, LAN)
 # TỰ ĐỘNG BẬT IN 2 MẶT & KHỔ GIẤY A4 CHO WPS OFFICE
 # ==============================================================================
 
@@ -64,43 +64,12 @@ if [[ -n "$USB_DEV" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. DÒ QUA MẠNG DNS-SD / IPP (ƯU TIÊN HP LASERJET ĐANG PHÁT SÓNG)
+# 2. DÒ TÌM ƯU TIÊN SOCKET IP CỐ ĐỊNH HOẶC MẠNG NỘI BỘ (TRÁNH KẸT DNS-SD)
 # ------------------------------------------------------------------------------
 if [[ -z "$TARGET_URI" ]]; then
-  info "Đang dò tìm thiết bị in mạng qua DNS-SD / IPP..."
-  mapfile -t NET_PRINTERS < <(lpinfo -v 2>/dev/null | grep -Ei 'network (dnssd|ipp|ipps)://' | awk '{print $2}' || true)
-
-  # Quét tìm máy in HP trước (ưu tiên dòng M402 / LaserJet)
-  for URI in "${NET_PRINTERS[@]}"; do
-    [[ -n "$URI" ]] || continue
-    if echo "$URI" | grep -qiE 'hp|laserjet|m402'; then
-      TARGET_URI="$URI"
-      PRINTER_BRAND="hp"
-      info "ĐÃ TÌM THẤY MÁY IN HP QUA DNS-SD: $TARGET_URI"
-      break
-    fi
-  done
-
-  # Nếu không có máy HP, tìm máy in Brother mạng
-  if [[ -z "$TARGET_URI" ]]; then
-    for URI in "${NET_PRINTERS[@]}"; do
-      [[ -n "$URI" ]] || continue
-      if echo "$URI" | grep -qi "Brother"; then
-        TARGET_URI="$URI"
-        PRINTER_BRAND="brother"
-        info "ĐÃ TÌM THẤY MÁY IN BROTHER QUA DNS-SD: $TARGET_URI"
-        break
-      fi
-    done
-  fi
-fi
-
-# ------------------------------------------------------------------------------
-# 3. QUÉT DẢI IP NỘI BỘ (CỔNG 9100) CÓ XÁC THỰC HTTP WEB
-# ------------------------------------------------------------------------------
-if [[ -z "$TARGET_URI" ]]; then
-  info "Quét cổng RAW Socket 9100 trên dải mạng LAN..."
+  info "Đang quét các thiết bị in qua dải mạng LAN và cổng RAW 9100..."
   LOCAL_SUBNET=$(ip route show default 2>/dev/null | awk '{print $3}' | cut -d. -f1-3 || true)
+  
   if [[ -n "$LOCAL_SUBNET" ]]; then
     mapfile -t IPS_9100 < <(nmap -p 9100 --open -T4 "${LOCAL_SUBNET}.0/24" -oG - 2>/dev/null | awk '/9100\/open/{print $2}' || true)
 
@@ -108,15 +77,15 @@ if [[ -z "$TARGET_URI" ]]; then
       [[ -n "$IP" ]] || continue
       PAGE_CONTENT=$(curl -s -L --connect-timeout 2 --max-time 3 "http://${IP}" 2>/dev/null || true)
       
-      if echo "$PAGE_CONTENT" | grep -qiE "Hewlett-Packard|HP LaserJet|LaserJet" && [[ -z "$TARGET_URI" ]]; then
-        TARGET_URI="socket://${IP}:9100"
-        PRINTER_BRAND="hp"
-        info "Xác thực máy in HP tại IP: $IP:9100"
-        break
-      elif echo "$PAGE_CONTENT" | grep -qi "Brother" && [[ -z "$TARGET_URI" ]]; then
+      if echo "$PAGE_CONTENT" | grep -qi "Brother" && [[ -z "$TARGET_URI" ]]; then
         TARGET_URI="socket://${IP}:9100"
         PRINTER_BRAND="brother"
-        info "Xác thực máy in Brother tại IP: $IP:9100"
+        info "Đã xác thực máy in Brother qua cổng RAW tại IP: $IP:9100"
+        break
+      elif echo "$PAGE_CONTENT" | grep -qiE "Hewlett-Packard|HP LaserJet|LaserJet" && [[ -z "$TARGET_URI" ]]; then
+        TARGET_URI="socket://${IP}:9100"
+        PRINTER_BRAND="hp"
+        info "Đã xác thực máy in HP qua cổng RAW tại IP: $IP:9100"
         break
       fi
     done
@@ -124,9 +93,31 @@ if [[ -z "$TARGET_URI" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
+# 3. DỰ PHÒNG QUA DNS-SD NẾU MẠNG LAN KHÔNG QUÉT THẤY QUA CỔNG 9100
+# ------------------------------------------------------------------------------
+if [[ -z "$TARGET_URI" ]]; then
+  info "Chuyển sang dò tìm qua mDNS/DNS-SD..."
+  mapfile -t NET_PRINTERS < <(lpinfo -v 2>/dev/null | grep -Ei 'network (dnssd|ipp|ipps)://' | awk '{print $2}' || true)
+
+  for URI in "${NET_PRINTERS[@]}"; do
+    [[ -n "$URI" ]] || continue
+    if echo "$URI" | grep -qi "Brother"; then
+      TARGET_URI="$URI"
+      PRINTER_BRAND="brother"
+      info "Tìm thấy Brother qua DNS-SD: $TARGET_URI"
+      break
+    elif echo "$URI" | grep -qiE 'hp|laserjet|m402'; then
+      TARGET_URI="$URI"
+      PRINTER_BRAND="hp"
+      info "Tìm thấy HP qua DNS-SD: $TARGET_URI"
+      break
+    fi
+  done
+fi
+
+# ------------------------------------------------------------------------------
 # 4. TẠO HÀNG ĐỢI VÀ CẤU HÌNH IN 2 MẶT KHỔ A4
 # ------------------------------------------------------------------------------
-# Xóa các hàng đợi cũ để tránh trùng lặp
 lpadmin -x "HP-Printer" 2>/dev/null || true
 lpadmin -x "Brother-Printer" 2>/dev/null || true
 
@@ -135,7 +126,6 @@ if [[ -n "$TARGET_URI" ]]; then
     PRINTER_NAME="HP-Printer"
     info "Đang tiến hành cài đặt [$PRINTER_NAME]..."
     
-    # Dùng driver IPP Everywhere chuẩn của CUPS (khớp giao diện Settings)
     lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E -m everywhere 2>/dev/null || \
     lpadmin -p "$PRINTER_NAME" -v "$TARGET_URI" -E
     
