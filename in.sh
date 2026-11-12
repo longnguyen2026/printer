@@ -225,7 +225,68 @@ for item in "${selection_array[@]}"; do
   display="${DISPLAYS[$idx]}"
   uri="${URIS[$idx]}"
   queue="$(make_queue_name "$display")"
-  # Detect existing queues case-insensitively and report their real queue name.
+  # Detect existing queues case-insensitively and report their re#!/usr/bin/env bash
+# Linux Print Tools v2.0.4
+# Detect USB / DNS-SD / IPP printers, exclude receipt/POS devices,
+# let the user select printers, and install the best locally available driver.
+# Existing queues and print jobs are never deleted or cancelled.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+VERSION="2.0.5"
+LOG_FILE="/var/log/linux-print-tools.log"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+info() { printf '\033[32m[INFO]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[WARN]\033[0m %s\n' "$*" >&2; }
+err()  { printf '\033[31m[ERROR]\033[0m %s\n' "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+if [[ $EUID -ne 0 ]]; then
+  die "Chạy bằng quyền root: sudo bash $0"
+fi
+
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+printf '\n============================================================\n'
+printf ' Linux Print Tools v%s\n' "$VERSION"
+printf ' Phát hiện và cài đặt máy in USB / mạng\n'
+printf '============================================================\n\n'
+
+export DEBIAN_FRONTEND=noninteractive
+info "Cài đặt các thành phần CUPS và công cụ nhận diện..."
+apt-get update -qq
+apt-get install -y \
+  cups cups-client cups-filters cups-ipp-utils \
+  printer-driver-brlaser printer-driver-gutenprint \
+  printer-driver-hpcups hplip hplip-data \
+  avahi-daemon avahi-utils usbutils ipp-usb \
+  python3 curl >/dev/null
+
+systemctl enable --now cups >/dev/null 2>&1 || true
+systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
+# Không tắt cups-browsed: dịch vụ này có thể đang cung cấp các hàng đợi mạng.
+sleep 2
+
+# Decode DNS-SD service instance and generate a readable display name.
+decode_dnssd() {
+  python3 - "$1" <<'PY'
+import sys, urllib.parse
+u=sys.argv[1]
+s=u[len("dnssd://"):] if u.startswith("dnssd://") else u
+s=s.split("._ipp._tcp",1)[0].split("._ipps._tcp",1)[0]
+print(urllib.parse.unquote(s))
+PY
+}
+
+# Return 0 for known receipt/POS printer models. Avoid excluding ordinary
+# office printers from the same manufacturer.
+al queue name.
   existing="$(find_existing_queue "$display" || true)"
   if [[ -n "$existing" ]]; then
     state="$(queue_state "$existing")"
