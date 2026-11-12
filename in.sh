@@ -7,7 +7,7 @@
 
 set -Eeuo pipefail
 IFS=$'\n\t'
-VERSION="2.0.0"
+VERSION="2.0.1"
 LOG_FILE="/var/log/linux-print-tools.log"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -47,10 +47,10 @@ add_uri(){
   grep -Fq "$u"$'\t' "$CAND" 2>/dev/null || printf '%s\t%s\n' "$u" "$src" >> "$CAND"
 }
 
-info "Quet backend CUPS: USB, IPP, IPPS, DNS-SD, socket, LPD..."
+info "Quet USB, IPP/IPPS, DNS-SD, RAW, LPD va may in chia se SMB..."
 while IFS= read -r line; do
   # lpinfo -v format: "direct usb://..." or "network ipp://..."
-  read -r backend uri _ <<< "$line"
+  IFS=' ' read -r backend uri _ <<< "$line"
   [[ -n "${uri:-}" ]] && add_uri "$uri" "CUPS backend ($backend)"
 done < <(lpinfo -v 2>/dev/null || true)
 
@@ -81,18 +81,39 @@ if command -v nmap >/dev/null 2>&1; then
     [[ -n "$subnet" ]] || continue
     info "Quet $subnet tren cong IPP/LPD/RAW..."
     nmap -n -T3 --open -p 445,631,515,9100 "$subnet" -oG "$TMP/nmap.gnmap" 2>/dev/null || true
-    awk '/Ports:/{ip=$2;if($0~/631\/open/)print "ipp://"ip":631/";if($0~/9100\/open/)print "socket://"ip":9100";if($0~/515\/open/)print "lpd://"ip":515";if($0~/445\/open/)print ip}' "$TMP/nmap.gnmap" |
-    while IFS= read -r item; do
-      if [[ "$item" == *.* ]]; then
-        # Thu liet ke may in chia se SMB cong khai; share can xac thuc se duoc bo qua.
-        smbclient -g -N -L "//$item" 2>/dev/null |
-          awk -F'|' '$1=="Printer"{print $2}' |
-          while IFS= read -r share; do
-            [[ -n "$share" ]] && add_uri "smb://$item/$share" "SMB share"
+
+    # Record co loai rieng: tranh nham dia chi IP voi URI co dau cham.
+    awk '/Ports:/{ip=$2;
+      if($0~/631\/open/) print "IPP|"ip;
+      if($0~/9100\/open/) print "RAW|"ip;
+      if($0~/515\/open/) print "LPD|"ip;
+      if($0~/445\/open/) print "SMB|"ip
+    }' "$TMP/nmap.gnmap" |
+    while IFS='|' read -r kind host; do
+      case "$kind" in
+        IPP)
+          # Thu nhieu resource URI; chi them neu may chu tra successful-ok.
+          for path in /ipp/print /ipp/port1 /printers/print /printers/HP /; do
+            testout="$TMP/ipp-path-${host//./_}.txt"
+            timeout 5 ipptool -tv "ipp://$host:631$path" \
+              /usr/share/cups/ipptool/get-printer-attributes.test >"$testout" 2>&1 || true
+            if grep -qi 'status-code = successful-ok' "$testout"; then
+              add_uri "ipp://$host:631$path" "LAN IPP"
+              break
+            fi
           done
-      else
-        add_uri "$item" "LAN scan"
-      fi
+          ;;
+        RAW) add_uri "socket://$host:9100" "LAN RAW 9100" ;;
+        LPD) add_uri "lpd://$host:515" "LAN LPD" ;;
+        SMB)
+          # Chi lay share duoc cong bo la Printer; share can dang nhap se bo qua.
+          smbclient -g -N -L "//$host" 2>/dev/null |
+            awk -F'|' '$1=="Printer"{print $2}' |
+            while IFS= read -r share; do
+              [[ -n "$share" ]] && add_uri "smb://$host/$share" "SMB printer share"
+            done
+          ;;
+      esac
     done
   done < <(ip -o -f inet addr show scope global 2>/dev/null | awk '{print $4}' || true)
 fi
@@ -121,12 +142,21 @@ while IFS=$'\t' read -r uri source; do
   fi
   [[ -n "$model" ]] || model="Model chua nhan dien"
   devid="$(extract_attr "$out" printer-device-id || true)"
+
+  # Bo qua may in bill/POS. Chi loai Fujitsu/Epson khi model cho thay ro dong POS.
+  POS_SIGNATURE="$model $devid $uri"
+  if printf '%s' "$POS_SIGNATURE" | grep -Eiq \
+    'BIXOLON|SRP-[A-Z0-9-]+|FUJITSU.{0,30}(POS|THERMAL|RECEIPT)|THERMAL.{0,20}(RECEIPT|PRINTER)|RECEIPT.{0,20}(PRINTER|POS)|STAR MICRONICS|TSP[0-9]{2,}|CITIZEN.{0,30}(POS|RECEIPT|THERMAL)|RONGTA|XPRINTER|SEWOO|SNBC|EPSON[[:space:]_-]*TM[-[:space:]]?[A-Z0-9]|TM[-[:space:]]?T[0-9]'; then
+    info "Bo qua may in bill/POS: $model [$uri]"
+    continue
+  fi
+
   printf '%s\t%s\t%s\t%s\t%s\n' "$uri" "$source" "$model" "$devid" "$out" >> "$DETAILS"
 done < "$CAND"
 
 count="$(wc -l < "$DETAILS" | tr -d ' ')"
 if (( count == 0 )); then
-  warn "Khong tim thay may in. Kiem tra cap USB, LAN, IPP va chia se may in."
+  warn "Khong tim thay may in van phong phu hop. May in bill/POS da bi bo qua neu nhan dien duoc."
   exit 0
 fi
 
@@ -185,67 +215,6 @@ if [[ "$MODEL" != "Model chua nhan dien" ]]; then
     done < "$MODELS"
   fi
 fi
-#!/usr/bin/env bash
-# Linux Print Tools v2.0 - interactive USB / LAN printer discovery for Mint/Kubuntu.
-# Uses CUPS, DNS-SD/Avahi and optional Nmap subnet discovery.
-# Never deletes existing queues or cancels print jobs.
-# Driver policy: exact installed CUPS PPD first, IPP Everywhere second.
-# Does not execute unverified vendor installers or invent download URLs.
-
-set -Eeuo pipefail
-IFS=$'\n\t'
-VERSION="2.0.0"
-LOG_FILE="/var/log/linux-print-tools.log"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-
-info(){ printf '\033[1;32m[INFO]\033[0m %s\n' "$*"; }
-warn(){ printf '\033[1;33m[CANH BAO]\033[0m %s\n' "$*" >&2; }
-die(){ printf '\033[1;31m[LOI]\033[0m %s\n' "$*" >&2; exit 1; }
-
-[[ $EUID -eq 0 ]] || die "Chay bang: sudo bash $0"
-command -v apt-get >/dev/null || die "Chi ho tro Linux Mint/Ubuntu/Kubuntu."
-mkdir -p /var/log
-touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
-export DEBIAN_FRONTEND=noninteractive
-
-echo "=== Linux Print Tools v$VERSION ==="
-info "Cai CUPS, cong cu quet va driver tu kho Ubuntu..."
-apt-get update
-apt-get install -y cups cups-client cups-filters cups-ipp-utils \
-  hplip hplip-data printer-driver-hpcups printer-driver-brlaser \
-  printer-driver-gutenprint printer-driver-all avahi-daemon avahi-utils \
-  usbutils ipp-usb snmp nmap curl python3 smbclient
-
-systemctl enable --now cups
-systemctl enable --now avahi-daemon 2>/dev/null || true
-# cups-browsed giup phat hien may in CUPS chia se; khong tat dich vu nay.
-if systemctl list-unit-files cups-browsed.service >/dev/null 2>&1; then
-  systemctl enable --now cups-browsed 2>/dev/null || true
-fi
-
-CAND="$TMP/candidates.tsv"
-: > "$CAND"
-add_uri(){
-  local u="${1:-}" src="${2:-discovery}"
-  [[ -n "$u" ]] || return 0
-  u="${u//$'\r'/}"
-  grep -Fq "$u"$'\t' "$CAND" 2>/dev/null || printf '%s\t%s\n' "$u" "$src" >> "$CAND"
-}
-
-info "Quet backend CUPS: USB, IPP, IPPS, DNS-SD, socket, LPD..."
-while IFS= read -r line; do
-  # lpinfo -v format: "direct usb://..." or "network ipp://..."
-  read -r backend uri _ <<< "$line"
-  [[ -n "${uri:-}" ]] && add_uri "$uri" "CUPS backend ($backend)"
-done < <(lpinfo -v 2>/dev/null || true)
-
-info "Quet may in cong bo qua Avahi..."
-for svc in _ipp._tcp _ipps._tcp _printer._tcp; do
-  avahi-browse -rt "$svc" 2>/dev/null |
-  python3 -c '
-import re,sys
 
 # IPP Everywhere: chi thu khi IPP attributes query thanh cong.
 DRIVERLESS=no
