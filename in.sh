@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="2.0.4"
+VERSION="2.0.5"
 LOG_FILE="/var/log/linux-print-tools.log"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -74,6 +74,31 @@ print((s[:100] or 'printer'))
 PY
 }
 
+# Find an existing CUPS queue by normalized name, ignoring case and separators.
+find_existing_queue() {
+  local wanted="$1" q normalized
+  wanted="$(make_queue_name "$wanted")"
+  while IFS= read -r q; do
+    [[ -n "$q" ]] || continue
+    normalized="$(make_queue_name "$q")"
+    if [[ "$normalized" == "$wanted" ]]; then
+      printf '%s\n' "$q"
+      return 0
+    fi
+  done < <(lpstat -p 2>/dev/null | awk '$1 == "printer" {print $2}')
+  return 1
+}
+
+queue_state() {
+  local q="$1" line
+  line="$(lpstat -p "$q" 2>/dev/null | head -n1 || true)"
+  if [[ "$line" =~ is[[:space:]]+([^.]*) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "đã tồn tại"
+  fi
+}
+
 # Build candidate list from actual device URIs reported by CUPS.
 # Format: display<TAB>uri<TAB>kind
 CANDIDATES="$TMP_DIR/candidates.tsv"
@@ -134,9 +159,17 @@ mapfile -t DISPLAYS < <(cut -f1 "$TMP_DIR/usable.tsv")
 mapfile -t URIS < <(cut -f2 "$TMP_DIR/usable.tsv")
 mapfile -t KINDS < <(cut -f3 "$TMP_DIR/usable.tsv")
 
-printf '\nMáy in khả dụng:\n'
+printf '\nMáy in phát hiện được:\n'
 for i in "${!DISPLAYS[@]}"; do
-  printf '  %2d) %-48s [%s]\n' "$((i+1))" "${DISPLAYS[$i]}" "${KINDS[$i]}"
+  existing="$(find_existing_queue "${DISPLAYS[$i]}" || true)"
+  if [[ -n "$existing" ]]; then
+    state="$(queue_state "$existing")"
+    printf '  %2d) %-42s [%s] [ĐÃ CẤU HÌNH: %s; %s]\n' \
+      "$((i+1))" "${DISPLAYS[$i]}" "${KINDS[$i]}" "$existing" "$state"
+  else
+    printf '  %2d) %-42s [%s] [CHƯA CẤU HÌNH]\n' \
+      "$((i+1))" "${DISPLAYS[$i]}" "${KINDS[$i]}"
+  fi
 done
 printf '\n'
 if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
@@ -192,9 +225,12 @@ for item in "${selection_array[@]}"; do
   display="${DISPLAYS[$idx]}"
   uri="${URIS[$idx]}"
   queue="$(make_queue_name "$display")"
-  # Avoid changing an existing queue with the same name.
-  if lpstat -p "$queue" >/dev/null 2>&1; then
-    warn "Hàng đợi '$queue' đã tồn tại; giữ nguyên, không ghi đè."
+  # Detect existing queues case-insensitively and report their real queue name.
+  existing="$(find_existing_queue "$display" || true)"
+  if [[ -n "$existing" ]]; then
+    state="$(queue_state "$existing")"
+    info "Máy in này đã được cấu hình. Hàng đợi: $existing (trạng thái: $state)."
+    info "Giữ nguyên cấu hình hiện tại; không tạo hàng đợi trùng và không thay đổi lệnh in."
     continue
   fi
 
