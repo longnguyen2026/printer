@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Print Tools v2.0.2
+# Linux Print Tools v2.0.3
 # Detect USB / DNS-SD / IPP printers, exclude receipt/POS devices,
 # let the user select printers, and install the best locally available driver.
 # Existing queues and print jobs are never deleted or cancelled.
@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="2.0.2"
+VERSION="2.0.3"
 LOG_FILE="/var/log/linux-print-tools.log"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -99,17 +99,8 @@ while IFS= read -r line; do
   esac
 done < <(lpinfo -v 2>/dev/null || true)
 
-# Include explicitly configured queues as candidates only if not already
-# represented by a discovered URI. Existing queues are never altered.
-while IFS= read -r line; do
-  [[ "$line" == "device for "* ]] || continue
-  q="${line#device for }"; q="${q%%:*}"
-  uri="${line#*: }"
-  [[ -n "$q" && -n "$uri" ]] || continue
-  if ! grep -Fq $'\t'"$uri"$'\t' "$CANDIDATES"; then
-    printf '%s\t%s\tEXISTING:%s\n' "$q" "$uri" "$q" >> "$CANDIDATES"
-  fi
-done < <(lpstat -v 2>/dev/null || true)
+# Existing CUPS queues are not added as installation candidates.
+# This avoids duplicate implicitclass entries and preserves current queues.
 
 # Remove duplicate URIs, then split supported and excluded devices.
 awk -F '\t' '!seen[$2]++' "$CANDIDATES" > "$TMP_DIR/unique.tsv"
@@ -148,8 +139,19 @@ for i in "${!DISPLAYS[@]}"; do
   printf '  %2d) %-48s [%s]\n' "$((i+1))" "${DISPLAYS[$i]}" "${KINDS[$i]}"
 done
 printf '\n'
-read -r -p "Chọn máy in cần cài (nhập số, nhiều số cách nhau bởi dấu cách; Enter để thoát): " selection
-[[ -n "${selection//[[:space:]]/}" ]] || { info "Đã thoát, không thay đổi hàng đợi."; exit 0; }
+if [[ ! -r /dev/tty ]]; then
+  die "Không tìm thấy terminal tương tác. Hãy chạy lệnh từ cửa sổ Terminal."
+fi
+# When launched with curl | sudo bash, stdin is the script itself.
+# Always read the user's choice from the controlling terminal.
+if ! IFS= read -r -p "Chọn máy in cần cài (nhập số, nhiều số cách nhau bởi dấu cách; Enter để thoát): " selection </dev/tty; then
+  die "Không đọc được lựa chọn từ terminal."
+fi
+if [[ -z "${selection//[[:space:]]/}" ]]; then
+  info "Đã thoát, không thay đổi hàng đợi."
+  exit 0
+fi
+IFS=' ' read -r -a selection_array <<< "$selection"
 
 # Driver lookup: require model tokens to match; do not blindly assign a
 # generic Brother/HP PPD to a different model.
