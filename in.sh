@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Print Tools v2.0.3
+# Linux Print Tools v2.0.4
 # Detect USB / DNS-SD / IPP printers, exclude receipt/POS devices,
 # let the user select printers, and install the best locally available driver.
 # Existing queues and print jobs are never deleted or cancelled.
@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION="2.0.3"
+VERSION="2.0.4"
 LOG_FILE="/var/log/linux-print-tools.log"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -139,19 +139,22 @@ for i in "${!DISPLAYS[@]}"; do
   printf '  %2d) %-48s [%s]\n' "$((i+1))" "${DISPLAYS[$i]}" "${KINDS[$i]}"
 done
 printf '\n'
-if [[ ! -r /dev/tty ]]; then
+if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
   die "Không tìm thấy terminal tương tác. Hãy chạy lệnh từ cửa sổ Terminal."
 fi
 # When launched with curl | sudo bash, stdin is the script itself.
-# Always read the user's choice from the controlling terminal.
-if ! IFS= read -r -p "Chọn máy in cần cài (nhập số, nhiều số cách nhau bởi dấu cách; Enter để thoát): " selection </dev/tty; then
+# Also, the normal output is piped through tee for logging. Therefore write
+# the prompt explicitly to the controlling terminal, not to stdout/stderr.
+printf '%s' "Chọn máy in cần cài (nhập số, nhiều số cách nhau bởi dấu cách; Enter để thoát): " > /dev/tty
+if ! IFS= read -r selection < /dev/tty; then
   die "Không đọc được lựa chọn từ terminal."
 fi
 if [[ -z "${selection//[[:space:]]/}" ]]; then
   info "Đã thoát, không thay đổi hàng đợi."
   exit 0
 fi
-IFS=' ' read -r -a selection_array <<< "$selection"
+# Accept one or more numbers separated by spaces or tabs.
+IFS=$' \t\n' read -r -a selection_array <<< "$selection"
 
 # Driver lookup: require model tokens to match; do not blindly assign a
 # generic Brother/HP PPD to a different model.
@@ -178,7 +181,6 @@ choose_driver() {
   return 1
 }
 
-IFS=' ' read -r -a selection_array <<< "$selection"
 for item in "${selection_array[@]}"; do
   [[ "$item" =~ ^[0-9]+$ ]] || { warn "Bỏ qua lựa chọn không hợp lệ: $item"; continue; }
   idx=$((item-1))
