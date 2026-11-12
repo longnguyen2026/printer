@@ -1,259 +1,238 @@
 #!/usr/bin/env bash
-# Linux Print Tools v2.0.1 - interactive USB / LAN printer discovery for Mint/Kubuntu.
-# Uses CUPS, DNS-SD/Avahi and optional Nmap subnet discovery.
-# Never deletes existing queues or cancels print jobs.
-# Driver policy: exact installed CUPS PPD first, IPP Everywhere second.
-# Does not execute unverified vendor installers or invent download URLs.
+# Linux Print Tools v2.0.2
+# Detect USB / DNS-SD / IPP printers, exclude receipt/POS devices,
+# let the user select printers, and install the best locally available driver.
+# Existing queues and print jobs are never deleted or cancelled.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
-VERSION="2.0.1"
+
+VERSION="2.0.2"
 LOG_FILE="/var/log/linux-print-tools.log"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-info(){ printf '\033[1;32m[INFO]\033[0m %s\n' "$*"; }
-warn(){ printf '\033[1;33m[CANH BAO]\033[0m %s\n' "$*" >&2; }
-die(){ printf '\033[1;31m[LOI]\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[32m[INFO]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[WARN]\033[0m %s\n' "$*" >&2; }
+err()  { printf '\033[31m[ERROR]\033[0m %s\n' "$*" >&2; }
+die()  { err "$*"; exit 1; }
 
-[[ $EUID -eq 0 ]] || die "Chay bang: sudo bash $0"
-command -v apt-get >/dev/null || die "Chi ho tro Linux Mint/Ubuntu/Kubuntu."
-mkdir -p /var/log
-touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
-export DEBIAN_FRONTEND=noninteractive
-
-echo "=== Linux Print Tools v$VERSION ==="
-info "Cai CUPS, cong cu quet va driver tu kho Ubuntu..."
-apt-get update
-apt-get install -y cups cups-client cups-filters cups-ipp-utils \
-  hplip hplip-data printer-driver-hpcups printer-driver-brlaser \
-  printer-driver-gutenprint printer-driver-all avahi-daemon avahi-utils \
-  usbutils ipp-usb snmp nmap curl python3 smbclient
-
-systemctl enable --now cups
-systemctl enable --now avahi-daemon 2>/dev/null || true
-# cups-browsed giup phat hien may in CUPS chia se; khong tat dich vu nay.
-if systemctl list-unit-files cups-browsed.service >/dev/null 2>&1; then
-  systemctl enable --now cups-browsed 2>/dev/null || true
+if [[ $EUID -ne 0 ]]; then
+  die "Chạy bằng quyền root: sudo bash $0"
 fi
 
-CAND="$TMP/candidates.tsv"
-: > "$CAND"
-add_uri(){
-  local u="${1:-}" src="${2:-discovery}"
-  [[ -n "$u" ]] || return 0
-  u="${u//$'\r'/}"
-  grep -Fq "$u"$'\t' "$CAND" 2>/dev/null || printf '%s\t%s\n' "$u" "$src" >> "$CAND"
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+printf '\n============================================================\n'
+printf ' Linux Print Tools v%s\n' "$VERSION"
+printf ' Phát hiện và cài đặt máy in USB / mạng\n'
+printf '============================================================\n\n'
+
+export DEBIAN_FRONTEND=noninteractive
+info "Cài đặt các thành phần CUPS và công cụ nhận diện..."
+apt-get update -qq
+apt-get install -y \
+  cups cups-client cups-filters cups-ipp-utils \
+  printer-driver-brlaser printer-driver-gutenprint \
+  printer-driver-hpcups hplip hplip-data \
+  avahi-daemon avahi-utils usbutils ipp-usb \
+  python3 curl >/dev/null
+
+systemctl enable --now cups >/dev/null 2>&1 || true
+systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
+# Không tắt cups-browsed: dịch vụ này có thể đang cung cấp các hàng đợi mạng.
+sleep 2
+
+# Decode DNS-SD service instance and generate a readable display name.
+decode_dnssd() {
+  python3 - "$1" <<'PY'
+import sys, urllib.parse
+u=sys.argv[1]
+s=u[len("dnssd://"):] if u.startswith("dnssd://") else u
+s=s.split("._ipp._tcp",1)[0].split("._ipps._tcp",1)[0]
+print(urllib.parse.unquote(s))
+PY
 }
 
-info "Quet USB, IPP/IPPS, DNS-SD, RAW, LPD va may in chia se SMB..."
+# Return 0 for known receipt/POS printer models. Avoid excluding ordinary
+# office printers from the same manufacturer.
+is_pos_printer() {
+  local s="${1^^}"
+  [[ "$s" =~ BIXOLON|SRP[-_[:space:]]?[0-9]|FP[-_[:space:]]?2000|STAR[[:space:]_-]*MICRONICS|TSP[0-9]{2,}|RONGTA|XPRINTER|SEWOO|SNBC|EPSON[[:space:]_-]?TM|TM[-_[:space:]]?T[0-9]|RECEIPT[[:space:]_-]*PRINTER|THERMAL[[:space:]_-]*RECEIPT ]]
+}
+
+# Make a CUPS-safe queue name from a display name.
+make_queue_name() {
+  python3 - "$1" <<'PY'
+import re,sys
+s=sys.argv[1].lower()
+s=re.sub(r'[^a-z0-9]+','_',s).strip('_')
+print((s[:100] or 'printer'))
+PY
+}
+
+# Build candidate list from actual device URIs reported by CUPS.
+# Format: display<TAB>uri<TAB>kind
+CANDIDATES="$TMP_DIR/candidates.tsv"
+: > "$CANDIDATES"
 while IFS= read -r line; do
-  # lpinfo -v format: "direct usb://..." or "network ipp://..."
+  # lpinfo -v format is usually: "network URI" or "direct URI".
   IFS=' ' read -r backend uri _ <<< "$line"
-  [[ -n "${uri:-}" ]] && add_uri "$uri" "CUPS backend ($backend)"
+  [[ -n "${uri:-}" ]] || continue
+  case "$uri" in
+    dnssd://*)
+      display="$(decode_dnssd "$uri")"
+      printf '%s\t%s\tDNS-SD\n' "$display" "$uri" >> "$CANDIDATES"
+      ;;
+    usb://*)
+      # Device ID/model information is available through lpinfo -v / lsusb;
+      # keep URI as candidate and resolve a friendly label below.
+      printf 'USB printer\t%s\tUSB\n' "$uri" >> "$CANDIDATES"
+      ;;
+    ipp://*|ipps://*|socket://*|lpd://*|smb://*|http://*|https://*)
+      host="${uri#*://}"; host="${host%%/*}"
+      printf '%s\t%s\tNETWORK\n' "Network printer ($host)" "$uri" >> "$CANDIDATES"
+      ;;
+  esac
 done < <(lpinfo -v 2>/dev/null || true)
 
-info "Quet may in cong bo qua Avahi..."
-for svc in _ipp._tcp _ipps._tcp _printer._tcp; do
-  avahi-browse -rt "$svc" 2>/dev/null |
-  python3 -c '
-import re,sys
-s=sys.stdin.read()
-for b in re.split(r"(?=^\s*=\s*;)",s,flags=re.M):
- if not re.search(r"^\s*=\s*;",b,re.M): continue
- a=re.search(r"^\s*address = \[(.*?)\]",b,re.M)
- p=re.search(r"^\s*port = \[(\d+)\]",b,re.M)
- t=re.search(r"^\s*txt = \[(.*?)\]",b,re.M)
- if not a or not p: continue
- rp="ipp/print"
- if t:
-  m=re.search(r"rp=([^\", ]+)",t.group(1))
-  if m: rp=m.group(1).lstrip("/")
- scheme="ipps" if "_ipps" in b else "ipp"
- print(f"{scheme}://{a.group(1)}:{p.group(1)}/{rp}")
-' | while IFS= read -r u; do add_uri "$u" "Avahi"; done
-done
+# Include explicitly configured queues as candidates only if not already
+# represented by a discovered URI. Existing queues are never altered.
+while IFS= read -r line; do
+  [[ "$line" == "device for "* ]] || continue
+  q="${line#device for }"; q="${q%%:*}"
+  uri="${line#*: }"
+  [[ -n "$q" && -n "$uri" ]] || continue
+  if ! grep -Fq $'\t'"$uri"$'\t' "$CANDIDATES"; then
+    printf '%s\t%s\tEXISTING:%s\n' "$q" "$uri" "$q" >> "$CANDIDATES"
+  fi
+done < <(lpstat -v 2>/dev/null || true)
 
-# Quet cac subnet IPv4 dang gan tren may, khong suy subnet tu gateway.
-if command -v nmap >/dev/null 2>&1; then
-  while IFS= read -r subnet; do
-    [[ -n "$subnet" ]] || continue
-    info "Quet $subnet tren cong IPP/LPD/RAW..."
-    nmap -n -T3 --open -p 445,631,515,9100 "$subnet" -oG "$TMP/nmap.gnmap" 2>/dev/null || true
+# Remove duplicate URIs, then split supported and excluded devices.
+awk -F '\t' '!seen[$2]++' "$CANDIDATES" > "$TMP_DIR/unique.tsv"
+: > "$TMP_DIR/usable.tsv"
+: > "$TMP_DIR/excluded.tsv"
+while IFS=$'\t' read -r display uri kind; do
+  [[ -n "$uri" ]] || continue
+  # For USB, try to replace generic label with USB device ID/model.
+  if [[ "$kind" == "USB" ]]; then
+    usb_text="$(lpinfo -v 2>/dev/null | grep -F "$uri" | head -n1 || true)"
+    display="USB printer ${usb_text#*usb://}"
+  fi
+  if is_pos_printer "$display $uri"; then
+    printf '%s\t%s\t%s\n' "$display" "$uri" "$kind" >> "$TMP_DIR/excluded.tsv"
+  else
+    printf '%s\t%s\t%s\n' "$display" "$uri" "$kind" >> "$TMP_DIR/usable.tsv"
+  fi
+done < "$TMP_DIR/unique.tsv"
 
-    # Record co loai rieng: tranh nham dia chi IP voi URI co dau cham.
-    awk '/Ports:/{ip=$2;
-      if($0~/631\/open/) print "IPP|"ip;
-      if($0~/9100\/open/) print "RAW|"ip;
-      if($0~/515\/open/) print "LPD|"ip;
-      if($0~/445\/open/) print "SMB|"ip
-    }' "$TMP/nmap.gnmap" |
-    while IFS='|' read -r kind host; do
-      case "$kind" in
-        IPP)
-          # Thu nhieu resource URI; chi them neu may chu tra successful-ok.
-          for path in /ipp/print /ipp/port1 /printers/print /printers/HP /; do
-            testout="$TMP/ipp-path-${host//./_}.txt"
-            timeout 5 ipptool -tv "ipp://$host:631$path" \
-              /usr/share/cups/ipptool/get-printer-attributes.test >"$testout" 2>&1 || true
-            if grep -qi 'status-code = successful-ok' "$testout"; then
-              add_uri "ipp://$host:631$path" "LAN IPP"
-              break
-            fi
-          done
-          ;;
-        RAW) add_uri "socket://$host:9100" "LAN RAW 9100" ;;
-        LPD) add_uri "lpd://$host:515" "LAN LPD" ;;
-        SMB)
-          # Chi lay share duoc cong bo la Printer; share can dang nhap se bo qua.
-          smbclient -g -N -L "//$host" 2>/dev/null |
-            awk -F'|' '$1=="Printer"{print $2}' |
-            while IFS= read -r share; do
-              [[ -n "$share" ]] && add_uri "smb://$host/$share" "SMB printer share"
-            done
-          ;;
-      esac
-    done
-  done < <(ip -o -f inet addr show scope global 2>/dev/null | awk '{print $4}' || true)
+printf '\n'
+if [[ -s "$TMP_DIR/excluded.tsv" ]]; then
+  warn "Đã tự động loại các thiết bị có dấu hiệu là máy in hóa đơn/POS:"
+  while IFS=$'\t' read -r d u k; do printf '  - %s\n' "$d"; done < "$TMP_DIR/excluded.tsv"
 fi
 
-DETAILS="$TMP/details.tsv"; : > "$DETAILS"
-extract_attr(){
-  sed -nE "s/^[[:space:]]*$2[[:space:]]*\\([^)]*\\)[[:space:]]*=[[:space:]]*//p" "$1" |
-    head -n1 | sed 's/^"//;s/"$//'
-}
-n=0
-while IFS=$'\t' read -r uri source; do
-  [[ -n "$uri" ]] || continue
-  n=$((n+1)); out="$TMP/ipp-$n.txt"
-  if [[ -r /usr/share/cups/ipptool/get-printer-attributes.test ]]; then
-    timeout 8 ipptool -tv "$uri" /usr/share/cups/ipptool/get-printer-attributes.test > "$out" 2>/dev/null || true
-  else : > "$out"; fi
-  model="$(extract_attr "$out" printer-make-and-model || true)"
-  [[ -n "$model" ]] || model="$(extract_attr "$out" printer-info || true)"
-  [[ -n "$model" ]] || model="$(extract_attr "$out" printer-name || true)"
-  if [[ -z "$model" && "$uri" == usb://* ]]; then
-    model="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.unquote(sys.argv[1]))' "$uri" | sed 's#usb://##;s/?[^?]*//')"
-  fi
-  if [[ -z "$model" && "$uri" =~ ^(ipp|ipps|socket|lpd)://\[?([0-9a-fA-F:.]+)\]? ]]; then
-    host="${BASH_REMATCH[2]}"
-    model="$(snmpget -v1 -c public -t 1 -r 0 -Oqv "$host" 1.3.6.1.2.1.1.1.0 2>/dev/null | tr -d '"' || true)"
-  fi
-  [[ -n "$model" ]] || model="Model chua nhan dien"
-  devid="$(extract_attr "$out" printer-device-id || true)"
+if [[ ! -s "$TMP_DIR/usable.tsv" ]]; then
+  die "Không tìm thấy máy in văn phòng phù hợp. Kiểm tra USB, Avahi/DNS-SD hoặc CUPS."
+fi
 
-  # Bo qua may in bill/POS. Chi loai Fujitsu/Epson khi model cho thay ro dong POS.
-  POS_SIGNATURE="$model $devid $uri"
-  if printf '%s' "$POS_SIGNATURE" | grep -Eiq \
-    'BIXOLON|SRP-[A-Z0-9-]+|FUJITSU.{0,30}(POS|THERMAL|RECEIPT)|THERMAL.{0,20}(RECEIPT|PRINTER)|RECEIPT.{0,20}(PRINTER|POS)|STAR MICRONICS|TSP[0-9]{2,}|CITIZEN.{0,30}(POS|RECEIPT|THERMAL)|RONGTA|XPRINTER|SEWOO|SNBC|EPSON[[:space:]_-]*TM[-[:space:]]?[A-Z0-9]|TM[-[:space:]]?T[0-9]'; then
-    info "Bo qua may in bill/POS: $model [$uri]"
+mapfile -t DISPLAYS < <(cut -f1 "$TMP_DIR/usable.tsv")
+mapfile -t URIS < <(cut -f2 "$TMP_DIR/usable.tsv")
+mapfile -t KINDS < <(cut -f3 "$TMP_DIR/usable.tsv")
+
+printf '\nMáy in khả dụng:\n'
+for i in "${!DISPLAYS[@]}"; do
+  printf '  %2d) %-48s [%s]\n' "$((i+1))" "${DISPLAYS[$i]}" "${KINDS[$i]}"
+done
+printf '\n'
+read -r -p "Chọn máy in cần cài (nhập số, nhiều số cách nhau bởi dấu cách; Enter để thoát): " selection
+[[ -n "${selection//[[:space:]]/}" ]] || { info "Đã thoát, không thay đổi hàng đợi."; exit 0; }
+
+# Driver lookup: require model tokens to match; do not blindly assign a
+# generic Brother/HP PPD to a different model.
+choose_driver() {
+  local display="$1" normalized model_line
+  normalized="$(printf '%s' "$display" | tr '[:lower:]' '[:upper:]')"
+  if [[ "$normalized" =~ HL[-_[:space:]]?L?2360D ]]; then
+    model_line="$(lpinfo -m 2>/dev/null | grep -iE 'Brother HL-L2360D series' | head -n1 || true)"
+    if [[ -n "$model_line" ]]; then printf '%s\n' "${model_line%% *}"; return 0; fi
+  fi
+  if [[ "$normalized" =~ HL[-_[:space:]]?L?([0-9]{4}[A-Z]?) ]]; then
+    local token="${BASH_REMATCH[1]}"
+    model_line="$(lpinfo -m 2>/dev/null | grep -iE "Brother HL-L?${token}([[:space:]]|,)" | head -n1 || true)"
+    if [[ -n "$model_line" ]]; then printf '%s\n' "${model_line%% *}"; return 0; fi
+  fi
+  if [[ "$normalized" =~ (M[0-9]{3}[A-Z]?) ]]; then
+    local token="${BASH_REMATCH[1]}"
+    model_line="$(lpinfo -m 2>/dev/null | grep -iE "HP.*${token}" | head -n1 || true)"
+    if [[ -n "$model_line" ]]; then printf '%s\n' "${model_line%% *}"; return 0; fi
+  fi
+  # Exact vendor/model phrase match from local CUPS model catalog.
+  model_line="$(lpinfo -m 2>/dev/null | grep -iF "$display" | head -n1 || true)"
+  if [[ -n "$model_line" ]]; then printf '%s\n' "${model_line%% *}"; return 0; fi
+  return 1
+}
+
+IFS=' ' read -r -a selection_array <<< "$selection"
+for item in "${selection_array[@]}"; do
+  [[ "$item" =~ ^[0-9]+$ ]] || { warn "Bỏ qua lựa chọn không hợp lệ: $item"; continue; }
+  idx=$((item-1))
+  if (( idx < 0 || idx >= ${#URIS[@]} )); then
+    warn "Số thứ tự không tồn tại: $item"
     continue
   fi
 
-  printf '%s\t%s\t%s\t%s\t%s\n' "$uri" "$source" "$model" "$devid" "$out" >> "$DETAILS"
-done < "$CAND"
+  display="${DISPLAYS[$idx]}"
+  uri="${URIS[$idx]}"
+  queue="$(make_queue_name "$display")"
+  # Avoid changing an existing queue with the same name.
+  if lpstat -p "$queue" >/dev/null 2>&1; then
+    warn "Hàng đợi '$queue' đã tồn tại; giữ nguyên, không ghi đè."
+    continue
+  fi
 
-count="$(wc -l < "$DETAILS" | tr -d ' ')"
-if (( count == 0 )); then
-  warn "Khong tim thay may in van phong phu hop. May in bill/POS da bi bo qua neu nhan dien duoc."
-  exit 0
-fi
+  info "Đang thiết lập: $display"
+  driver="$(choose_driver "$display" || true)"
+  if [[ -n "$driver" ]]; then
+    info "Driver khớp model: $driver"
+    if ! lpadmin -p "$queue" -E -v "$uri" -m "$driver"; then
+      warn "Không tạo được hàng đợi với driver đã chọn; thử IPP Everywhere."
+      driver=""
+    fi
+  fi
 
-echo
-echo "========== DANH SACH MAY IN TIM THAY =========="
-i=0
-while IFS=$'\t' read -r uri source model devid out; do
-  i=$((i+1))
-  printf '\n[%d] %s\n    Ket noi: %s\n    Phat hien boi: %s\n' "$i" "$model" "$uri" "$source"
-  [[ -n "$devid" ]] && printf '    Device ID: %s\n' "$devid"
-done < "$DETAILS"
-echo "==============================================="
-read -r -p "Chon may in (1-$count, 0 de thoat): " choice
-[[ "$choice" =~ ^[0-9]+$ ]] || die "Lua chon khong hop le."
-(( choice == 0 )) && exit 0
-(( choice >= 1 && choice <= count )) || die "So thu tu khong hop le."
+  if [[ -z "$driver" ]]; then
+    if [[ "$uri" == dnssd://* || "$uri" == ipp://* || "$uri" == ipps://* ]]; then
+      info "Không có PPD khớp model cục bộ; thử IPP Everywhere."
+      lpadmin -p "$queue" -E -v "$uri" -m everywhere || {
+        warn "IPP Everywhere không được thiết bị hỗ trợ; không tạo hàng đợi sai driver."
+        continue
+      }
+    else
+      warn "Không tìm thấy driver phù hợp cho $display. Không tạo hàng đợi bằng driver đoán."
+      continue
+    fi
+  fi
 
-IFS=$'\t' read -r URI SOURCE MODEL DEVID IPPFILE < <(sed -n "${choice}p" "$DETAILS")
-info "Da chon: $MODEL"
-IDENT="$MODEL $DEVID $URI"
-BRAND="unknown"
-if grep -qiE 'hewlett.?packard|(^|[^a-z])hp([^a-z]|$)|laserjet|deskjet|officejet' <<< "$IDENT"; then BRAND=hp
-elif grep -qi brother <<< "$IDENT"; then BRAND=brother
-elif grep -qiE 'canon|pixma|imageclass' <<< "$IDENT"; then BRAND=canon
-elif grep -qiE 'epson|ecotank|workforce|stylus' <<< "$IDENT"; then BRAND=epson
-elif grep -qi pantum <<< "$IDENT"; then BRAND=pantum
-elif grep -qiE 'samsung|xpress' <<< "$IDENT"; then BRAND=samsung
-fi
-info "Nhan dien hang: $BRAND"
+  lpadmin -p "$queue" -D "$display" 2>/dev/null || true
+  cupsenable "$queue" 2>/dev/null || true
+  cupsaccept "$queue" 2>/dev/null || true
 
-# Ten hang doi theo ten/model may in duoc bao cao; khong dung ten HP-Printer chung.
-BASE="$(printf '%s' "$MODEL" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null |
-  tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g;s/^-|-$//g' | cut -c1-48)"
-[[ -n "$BASE" ]] || BASE="printer"
-QUEUE="$BASE"; suffix=2
-while lpstat -p "$QUEUE" >/dev/null 2>&1; do
-  olduri="$(lpstat -v "$QUEUE" 2>/dev/null | sed 's/^[^:]*: //')"
-  [[ "$olduri" == "$URI" ]] && break
-  QUEUE="${BASE}-${suffix}"; suffix=$((suffix+1))
+  # Set A4 only when supported; never force duplex on a simplex printer.
+  lpadmin -p "$queue" -o PageSize=A4 2>/dev/null || true
+  lpadmin -p "$queue" -o media=A4 2>/dev/null || true
+  if lpoptions -p "$queue" -l 2>/dev/null | grep -qiE 'Duplex|sides'; then
+    lpadmin -p "$queue" -o sides=two-sided-long-edge 2>/dev/null || true
+  fi
+  info "Đã tạo hàng đợi: $queue"
 done
 
-# Tim PPD trong CUPS da cai, co kiem tra hang va model.
-MODELS="$TMP/models.txt"
-lpinfo -m > "$MODELS" 2>/dev/null || true
-DRIVER=""
-if [[ "$MODEL" != "Model chua nhan dien" ]]; then
-  key="$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/ /g')"
-  # Chi chap nhan PPD co hang + ma model (token co chu so), tranh match chung "HP".
-  model_token="$(awk '{for(i=1;i<=NF;i++) if($i ~ /[0-9]/){print $i; exit}}' <<< "$key")"
-  if [[ -n "$model_token" ]]; then
-    while IFS= read -r row; do
-      low="$(printf '%s' "$row" | tr '[:upper:]' '[:lower:]')"
-      if [[ "$low" == *"$BRAND"* && "$low" == *"$model_token"* ]]; then
-        DRIVER="$(awk '{print $1}' <<< "$row")"; break
-      fi
-    done < "$MODELS"
-  fi
-fi
-
-# IPP Everywhere: chi thu khi IPP attributes query thanh cong.
-DRIVERLESS=no
-if grep -qiE 'printer-make-and-model|printer-uuid|document-format-supported|ipp-versions-supported' "$IPPFILE" 2>/dev/null; then
-  DRIVERLESS=yes
-fi
-
-if [[ -n "$DRIVER" ]]; then
-  info "Chon PPD tu kho CUPS: $DRIVER"
-  lpadmin -p "$QUEUE" -E -v "$URI" -m "$DRIVER"
-elif [[ "$DRIVERLESS" == yes ]]; then
-  info "Thiet bi phan hoi IPP; thu driverless IPP Everywhere."
-  lpadmin -p "$QUEUE" -E -v "$URI" -m everywhere
-else
-  echo
-  warn "Chua co driver dung model trong cac goi da cai."
-  echo "Khong tu dong gan driver cua model khac."
-  echo "Neu may can driver doc quyen, hay tai goi dung model tu trang chinh hang."
-  read -r -p "Thu tao hang doi raw (co the mat tinh nang in) khong? [y/N]: " answer
-  [[ "$answer" =~ ^[Yy]$ ]] || die "Dung lai de tranh cai sai driver."
-  lpadmin -p "$QUEUE" -E -v "$URI" -m raw
-fi
-
-lpadmin -p "$QUEUE" -D "$MODEL" 2>/dev/null || true
-cupsenable "$QUEUE"; cupsaccept "$QUEUE"
-lpoptions -p "$QUEUE" -o media=A4 2>/dev/null || true
-if lpoptions -p "$QUEUE" -l 2>/dev/null | grep -qiE 'Duplex|sides'; then
-  lpoptions -p "$QUEUE" -o sides=two-sided-long-edge 2>/dev/null || true
-fi
-
-echo
-echo "=============== KET QUA ==============="
-lpstat -p "$QUEUE" -l 2>/dev/null || true
-lpstat -v "$QUEUE" 2>/dev/null || true
-echo "Ten hang doi : $QUEUE"
-echo "Ten/model    : $MODEL"
-echo "Hang         : $BRAND"
-echo "Driver       : ${DRIVER:-IPP Everywhere/raw}"
-echo "Log          : $LOG_FILE"
-echo "Khong xoa hang doi cu, khong huy lenh in, khong doi may in mac dinh."
-echo "======================================="
-warn "Gioi han: script chua tu dong tai va chay bo cai dat doc quyen theo moi model. Brother/Canon/Epson/Pantum co the can goi .deb rieng tu trang chinh hang; khong nen tu dong chay URL khong duoc xac minh."
+printf '\n============================================================\n'
+info "Hoàn tất. Các hàng đợi hiện có và lệnh in đang chờ được giữ nguyên."
+lpstat -p -d 2>/dev/null || true
+lpstat -v 2>/dev/null || true
+printf 'Log: %s\n' "$LOG_FILE"
+printf '============================================================\n'
