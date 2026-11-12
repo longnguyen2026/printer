@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Print Tools v2.0.4
+# Linux Print Tools v2.0.5
 # Detect USB / DNS-SD / IPP printers, exclude receipt/POS devices,
 # let the user select printers, and install the best locally available driver.
 # Existing queues and print jobs are never deleted or cancelled.
