@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Print Tools v2.0 - interactive USB / LAN printer discovery for Mint/Kubuntu.
+# Linux Print Tools v2.0.1 - interactive USB / LAN printer discovery for Mint/Kubuntu.
 # Uses CUPS, DNS-SD/Avahi and optional Nmap subnet discovery.
 # Never deletes existing queues or cancels print jobs.
 # Driver policy: exact installed CUPS PPD first, IPP Everywhere second.
