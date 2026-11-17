@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Print Tools v2.0.6
+# Linux Print Tools v2.0.6 - cập nhật 17/11/2026
 # Detect USB / DNS-SD / IPP printers, exclude receipt/POS devices,
 # let the user select printers, install drivers, and lock cups-browsed.
 
